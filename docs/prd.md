@@ -321,7 +321,15 @@ Removing a company may optionally preserve cached data locally.
 System must identify:
 - 10-K filings
 - 10-Q filings
-- Relevant 8-K filings
+- 10-K/A and 10-Q/A amendments
+- 8-K filings under Item 4.02 (Non-Reliance on Previously Issued Financial Statements)
+
+8-K filings under Item 4.02 are not used as a source of financial data. They are ingested solely so that the system can:
+1. Identify the specific fiscal periods the disclosure flags as unreliable, with full accuracy regardless of phrasing or whether structured tags are present.
+2. Surface a per-period warning to the user that the displayed values for those periods may be unreliable.
+3. Clear the warning automatically once a corresponding 10-K/A or 10-Q/A covering the affected period(s) has been filed and ingested.
+
+All other 8-K item types are out of V1 scope.
 
 ### FR-011 — Structured Filing Preference
 
@@ -454,9 +462,12 @@ Accuracy and consistency are prioritized over ingestion speed.
 Dashboard must display:
 - Revenue
 - Net income
-- Market cap
+- Historical market cap at each filing date (computed at ingestion from historical price and shares outstanding, persisted locally, available offline)
+- Current market cap (computed from a live price source when online; gracefully unavailable when offline)
 - Debt
 - Derived metrics
+
+The historical market cap series is required and must be available offline once a company has been ingested. The current market cap value is best-effort: it requires connectivity to a market data source and may be omitted from the widget when offline or when the source is unavailable, without affecting any other dashboard functionality.
 
 ### FR-051 — Historical Charts
 
