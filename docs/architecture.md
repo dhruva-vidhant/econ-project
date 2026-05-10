@@ -31,6 +31,8 @@ Drawn directly from the PRD and ranked:
 
 Speed of ingestion is explicitly the *lowest* priority among these.
 
+> **Data acquisition note.** V1 ingests the SEC's pre-extracted XBRL facts via the `data.sec.gov/api/xbrl/companyfacts` JSON API. It does **not** parse 10-K or 10-Q documents — those are filed as HTML / iXBRL / XBRL XML and are out of V1 scope as source material. See §3.5 for the full rationale.
+
 ---
 
 ## 2. Architectural Style
@@ -70,7 +72,7 @@ This split is deliberate: the read path optimizes for low-latency UI rendering, 
 
 - **Bundle size & memory:** Tauri applications are typically ~3–10 MB and use the system WebView (WKWebView on macOS), versus Electron's ~80–150 MB Chromium runtime. For a single-user analytical app, the lighter footprint matters.
 - **Security:** Tauri's IPC surface is opt-in per command, with an explicit allowlist. The PRD's "minimize third-party dependencies" and "avoid unnecessary outbound requests" principles map naturally onto Tauri's permission model.
-- **Rust backend:** XBRL/XML parsing, taxonomy normalization, and SQLite work all benefit from Rust's correctness guarantees, error-handling discipline, and zero-cost abstractions. The normalization subsystem in particular is the kind of code where Rust's type system pays for itself.
+- **Rust backend:** JSON parsing of SEC's `companyfacts` payload, taxonomy normalization, optional XBRL XML fallback parsing, and SQLite work all benefit from Rust's correctness guarantees, error-handling discipline, and zero-cost abstractions. The normalization subsystem in particular is the kind of code where Rust's type system pays for itself.
 - **Native macOS look-and-feel:** WKWebView integrates with macOS conventions (text rendering, scrolling, accessibility) more naturally than bundled Chromium.
 
 ### 3.3 Why not native Swift/AppKit?
@@ -88,15 +90,47 @@ DuckDB is more attractive for ad-hoc analytical queries, but for V1:
 - Tauri + `rusqlite` has a well-trodden integration path.
 - DuckDB can be added later as a read-only analytical accelerator without changing the canonical store.
 
-### 3.5 Rationale: SEC CompanyFacts JSON as the primary source
+### 3.5 Rationale: how V1 acquires financial data from SEC EDGAR
 
-The SEC EDGAR XBRL Frames/Facts API (`data.sec.gov/api/xbrl/...`) returns already-extracted structured financial facts in JSON, with units, periods, and accession numbers attached. Using it as the primary ingestion source instead of parsing raw XBRL XML directly:
+This is the most important data-flow decision in V1. It is worth being precise about what is and is not on the wire.
 
-- Removes ~80% of the XBRL parsing complexity for V1.
-- Still preserves traceability: every fact carries `accn` (accession number), `form` (10-K/10-Q), `fp` (fiscal period), and `fy` (fiscal year).
-- Keeps a clean fallback path (raw XBRL XML) for the cases where the API is incomplete.
+**10-K and 10-Q documents themselves are not in JSON.** A filing is submitted to EDGAR as a bundle of HTML / inline XBRL (iXBRL) / XBRL XML and exhibits. There is no public API endpoint that returns "the 10-K, as JSON." Anyone parsing a 10-K is parsing HTML or XML.
 
-Raw XBRL parsing is implemented as a fallback module behind the same `FactSource` trait, so it can be enabled per-fact-per-filing without disturbing the rest of the pipeline.
+**What V1 actually consumes is a different artifact.** Since the SEC XBRL mandate (large filers ~2009, all U.S.-listed filers ~2011), every numeric line item on the financial statements in a 10-K, 10-Q, or financial-statement 8-K must be tagged with a structured XBRL concept (e.g., `us-gaap:Revenues`, `us-gaap:Assets`, `us-gaap:NetIncomeLoss`). The SEC ingests those tagged values into a structured database and exposes a public read-side at:
+
+```
+https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json
+```
+
+This JSON is **not the 10-K**. It is the SEC's own pre-extracted view of every XBRL fact the company has ever tagged in a 10-K / 10-Q / 8-K, aggregated into a single JSON document keyed by taxonomy and concept. Each fact in the response carries:
+
+| Field | Meaning |
+|---|---|
+| `val` | The numeric value, in the declared unit |
+| `unit` (key) | `USD`, `shares`, `USD/shares`, etc. |
+| `start`, `end` | Period covered (or `end` only, for instant facts) |
+| `fy` | Fiscal year |
+| `fp` | Fiscal period (`FY`, `Q1`, `Q2`, `Q3`, `Q4`) |
+| `form` | Source form type (`10-K`, `10-Q`, `10-K/A`, `8-K`, …) |
+| `accn` | Accession number of the source filing |
+
+The `accn` is what gives V1 its source-filing traceability for free (FR-060): every normalized value can be linked back to the exact filing it came from without us touching the filing itself.
+
+**What V1 gets from `companyfacts`:** every tagged numeric line item on the income statement, balance sheet, and cash-flow statement, across every reporting period the company has filed, for any U.S.-listed company that complies with the XBRL mandate. This is exactly the data the V1 PRD requires (FR-020 / FR-021 / FR-022).
+
+**What V1 does *not* get from `companyfacts`:**
+
+- MD&A narrative
+- Footnote prose
+- Risk factors and other Reg S-K narrative sections
+- Exhibits
+- Anything inside the 10-K that is not XBRL-tagged
+
+None of this is in V1 scope. The PRD explicitly defers narrative analysis (earnings call analysis, AI-generated insights) to V3.
+
+**Consequence:** V1 never parses a 10-K document. The only document the ingestion pipeline ever reads in the normal path is `companyfacts.json` (one per company) plus the `submissions.json` filing index. A secondary, fallback path can fetch the raw **XBRL instance document** (XML) inside a specific filing for the rare case where `companyfacts` is missing a value the company actually reported. That fallback parses XBRL XML, **not 10-K HTML**. HTML / iXBRL parsing of 10-Ks is explicitly out of V1 scope and is deferred to V3.
+
+The fallback is implemented behind the same `FactSource` trait as the JSON path, so it can be enabled per-concept-per-filing without disturbing the rest of the pipeline.
 
 ---
 
@@ -343,7 +377,7 @@ CREATE TABLE normalized_fact (
   value           REAL NOT NULL,              -- in base unit (USD, shares, ...)
   unit            TEXT NOT NULL,
   source_fact_id  INTEGER NOT NULL REFERENCES raw_fact(id),
-  source_kind     TEXT NOT NULL,              -- 'xbrl_api','xbrl_xml','text'
+  source_kind     TEXT NOT NULL,              -- 'xbrl_api' | 'xbrl_xml' (V1 does not parse 10-K HTML)
   confidence      REAL NOT NULL DEFAULT 1.0,
   superseded_by   INTEGER REFERENCES normalized_fact(id),
   ingested_at     TEXT NOT NULL,
@@ -391,16 +425,19 @@ Notes:
 ├── data.sqlite-wal                          # WAL (journal_mode=WAL)
 ├── filings/
 │   └── <cik>/
-│       └── <accession_no>/
-│           ├── companyfacts.json            # if from API
-│           ├── primary_doc.xml              # raw XBRL when fetched
+│       ├── companyfacts.json                # SEC's pre-extracted XBRL facts, one per company
+│       ├── submissions.json                 # SEC filing index, one per company
+│       └── <accession_no>/                  # only created on XBRL-XML fallback
+│           ├── primary_doc.xml              # raw XBRL instance document (NOT the 10-K HTML)
 │           └── metadata.json
 ├── logs/
 │   └── econ-project.<date>.log
 └── config.json                              # user prefs
 ```
 
-Raw filings are kept on disk (not in SQLite blobs) so they can be inspected, backed up, or reprocessed without touching the database. The `raw_path` column in `filing` points to the directory.
+The two top-level files under each `<cik>/` directory (`companyfacts.json`, `submissions.json`) are the only artifacts V1 fetches in the normal path — both are per-company, not per-filing. The per-`<accession_no>/` subdirectory is created only when the fallback path needs to retrieve a specific filing's XBRL instance document; it is empty for most companies.
+
+Raw payloads are kept on disk (not in SQLite blobs) so they can be inspected, backed up, or re-processed without touching the database. The `raw_path` column in `filing` points to the relevant directory or file.
 
 ---
 
@@ -411,11 +448,11 @@ Raw filings are kept on disk (not in SQLite blobs) so they can be inspected, bac
 | Purpose | Endpoint | Notes |
 |---|---|---|
 | Ticker → CIK lookup | `https://www.sec.gov/files/company_tickers.json` | Cached locally; refresh weekly |
-| Filing index | `https://data.sec.gov/submissions/CIK{cik10}.json` | Recent 1000 + paginated history |
-| All facts (primary) | `https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json` | One JSON, all periods, all concepts |
-| Single concept (fallback) | `https://data.sec.gov/api/xbrl/companyconcept/CIK{cik10}/{taxonomy}/{tag}.json` | For targeted re-fetch |
-| Raw filing index | `https://www.sec.gov/cgi-bin/browse-edgar?...` | Only when API path is incomplete |
-| Raw XBRL document | `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-stripped}/{primary_doc}` | Last-resort parse |
+| Filing index | `https://data.sec.gov/submissions/CIK{cik10}.json` | Per-company list of filings (form type, accession, dates). Used to know what filings exist; does **not** contain financial values. |
+| All facts (primary) | `https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json` | **SEC's pre-extracted XBRL facts**, aggregated across all of a company's 10-K / 10-Q / 8-K filings. **Not the filings themselves.** One JSON per company. This is V1's main data source. |
+| Single concept (fallback) | `https://data.sec.gov/api/xbrl/companyconcept/CIK{cik10}/{taxonomy}/{tag}.json` | Same data sliced by concept. Used for targeted re-fetch when `companyfacts` has a gap for a known concept. |
+| Raw filing index | `https://www.sec.gov/cgi-bin/browse-edgar?...` | Used only to locate the path of a specific filing's XBRL instance document when the fallback path is required. |
+| Raw XBRL document | `https://www.sec.gov/Archives/edgar/data/{cik}/{accession-stripped}/{primary_doc}` | The **XBRL instance document (XML)** inside a specific filing. Last-resort parse. V1 does **not** download or parse the 10-K HTML / iXBRL document. |
 
 ### 7.2 Compliance
 
@@ -529,11 +566,13 @@ Each stage takes a typed input and produces a typed output; each is independentl
 
 | Stage | Input | Output | Side effects |
 |---|---|---|---|
-| Discover | Ticker | (CIK, list of relevant filings) | None |
-| Download | Filings | RawDocuments on disk | Filesystem |
-| Parse | RawDocuments | RawFacts | None |
+| Discover | Ticker | CIK + filing index from `submissions.json` | None |
+| Download | CIK | `companyfacts.json` (primary path); per-accession XBRL instance XML (fallback only) | Filesystem |
+| Parse | `companyfacts.json` (and any fallback XBRL XML) | `RawFact` records | None |
 | Normalize | RawFacts + ConceptMap | NormalizedFacts + Diagnostics | None |
 | Persist | NormalizedFacts + RawFacts + Diagnostics | Persisted state | DB |
+
+**Normal-path traffic.** For a typical ingestion, V1 makes exactly two HTTP requests against `data.sec.gov`: one for `submissions/CIK{cik10}.json` and one for `xbrl/companyfacts/CIK{cik10}.json`. Per-filing requests are made *only* on the fallback path (a specific concept missing for a specific filing in `companyfacts`). 10-K HTML / iXBRL documents are never fetched.
 
 ### 9.2 Concurrency model
 
