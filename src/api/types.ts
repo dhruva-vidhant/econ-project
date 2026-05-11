@@ -48,3 +48,58 @@ export interface AppError {
 }
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: AppError };
+
+export interface IngestionSummary {
+  cik: string;
+  ticker: string;
+  name: string;
+  filings_ingested: number;
+  raw_facts_ingested: number;
+  normalized_facts_ingested: number;
+  events_recorded: number;
+}
+
+export interface AddCompanyResponse {
+  company: Company;
+  summary: IngestionSummary;
+}
+
+export interface DashboardWidget {
+  metric: string;
+  period_label: string;
+  value_micro: number;
+  history: [string, number][];
+}
+
+export interface DashboardPayload {
+  company: Company;
+  widgets: DashboardWidget[];
+}
+
+export interface IngestionEvent {
+  id: number;
+  cik?: Cik | null;
+  accession_no?: AccessionNo | null;
+  stage: string;
+  level: "info" | "warn" | "error";
+  user_visible: boolean;
+  message: string;
+  detail_json?: string | null;
+  occurred_at: string;
+}
+
+/** Convert a stored micro-unit value to USD dollars (with sign preserved). */
+export function microToUsd(micro: number): number { return micro / 1_000_000; }
+
+/** Format a USD micro-unit value as compact ("$3.83B"). */
+export function fmtUsdCompact(micro: number): string {
+  const v = microToUsd(micro);
+  const abs = Math.abs(v);
+  const fmt = (n: number, suffix: string) =>
+    `${v < 0 ? "-" : ""}$${n.toFixed(n >= 100 ? 0 : 2)}${suffix}`;
+  if (abs >= 1e12) return fmt(abs / 1e12, "T");
+  if (abs >= 1e9) return fmt(abs / 1e9, "B");
+  if (abs >= 1e6) return fmt(abs / 1e6, "M");
+  if (abs >= 1e3) return fmt(abs / 1e3, "K");
+  return `${v < 0 ? "-" : ""}$${abs.toFixed(2)}`;
+}

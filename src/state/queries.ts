@@ -4,12 +4,29 @@ import * as api from "@/api/client";
 
 export const QK = {
   companies: ["companies"] as const,
+  dashboard: (cik: string) => ["dashboard", cik] as const,
+  events: (cik: string | null) => ["events", cik] as const,
 };
 
 export function useCompanies() {
   return useQuery({
     queryKey: QK.companies,
     queryFn: api.listCompanies,
+  });
+}
+
+export function useDashboard(cik: string | undefined) {
+  return useQuery({
+    queryKey: cik ? QK.dashboard(cik) : ["dashboard", "none"],
+    queryFn: () => api.getDashboard(cik!),
+    enabled: !!cik,
+  });
+}
+
+export function useEvents(cik: string | null = null, limit = 200) {
+  return useQuery({
+    queryKey: QK.events(cik),
+    queryFn: () => api.getIngestionEvents(cik, limit),
   });
 }
 

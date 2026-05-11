@@ -44,5 +44,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Syn
         commands::list_companies,
         commands::add_company,
         commands::remove_company,
+        commands::get_metric_history,
+        commands::get_dashboard,
+        commands::get_ingestion_events,
+        commands::get_supersession_chain,
     ]
 }
