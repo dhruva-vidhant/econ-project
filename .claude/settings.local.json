@@ -28,7 +28,9 @@
       "Bash(tar -xzf /tmp/node.tar.gz -C /tmp/)",
       "Bash(npm --version)",
       "Bash(npx --version)",
-      "Bash(md5 /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/02-home-with-aapl.png /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/07-lineage-drawer.png)"
+      "Bash(md5 /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/02-home-with-aapl.png /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/07-lineage-drawer.png)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:github.com)"
     ],
     "defaultMode": "bypassPermissions"
   },

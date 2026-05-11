@@ -30,8 +30,16 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init());
+    // Embedded W3C WebDriver server — only in debug builds, only when
+    // the harness wires up TAURI_WEBDRIVER_PORT. Works on macOS via
+    // WKWebView native APIs (no external driver process needed).
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    }
+    builder
         .setup(ipc::setup)
         .invoke_handler(ipc::handler())
         .run(tauri::generate_context!())

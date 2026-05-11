@@ -38,6 +38,7 @@ dirs = "5.0"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 regex = "1.11"
 scraper = "0.20"
+tauri-plugin-wdio-webdriver = "1.0.0"
 
 [dev-dependencies]
 tempfile = "3.13"
