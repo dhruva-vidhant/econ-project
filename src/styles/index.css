@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Dark theme tokens (default per architecture §11.4). */
+  --color-bg: 12 14 18;
+  --color-surface: 22 25 32;
+  --color-text: 230 233 240;
+  --color-muted: 130 138 154;
+  --color-border: 36 41 51;
+  --color-accent: 86 156 214;
+  --color-good: 102 187 106;
+  --color-bad: 239 83 80;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: rgb(var(--color-bg));
+  color: rgb(var(--color-text));
+}
+
+body {
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  font-feature-settings: "tnum" 1; /* tabular numerals */
+}
+
+/* Hide native scrollbars in a low-key way. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--color-border)); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--color-muted) / 0.6); }
