@@ -214,7 +214,7 @@ function seedAapl() {
   const primary: NormalizedFact = {
     id: latestRevId,
     cik: "0000320193",
-    metric: "Revenue",
+    metric: "revenue",
     period_id: 20240,
     value: APPLE_REVENUE_ANNUAL[APPLE_REVENUE_ANNUAL.length - 1],
     unit: "USD",

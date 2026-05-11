@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { fmtUsdCompact, microToUsd } from "@/api/types";
+import { fmtUsdCompact, microToUsd, prettyMetric } from "@/api/types";
 import { useLineage } from "@/state/queries";
 
 interface Props {
@@ -44,7 +44,7 @@ export default function LineageDrawer({ normalizedFactId, onClose }: Props) {
       {data && (
         <div className="space-y-4 p-4 text-xs">
           <Section title="Current value">
-            <Row label="Metric" value={data.primary.metric.replace(/_/g, " ")} />
+            <Row label="Metric" value={prettyMetric(data.primary.metric)} />
             <Row label="Value" value={fmtUsdCompact(data.primary.value)} />
             <Row label="Unit" value={data.primary.unit} />
             <Row label="Source kind" value={data.primary.source_kind} />

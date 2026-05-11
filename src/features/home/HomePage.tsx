@@ -17,8 +17,12 @@ export default function HomePage() {
         className="mb-6 flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!ticker.trim()) return;
-          add.mutate(ticker.trim().toUpperCase());
+          const t = ticker.trim().toUpperCase();
+          if (!t) return;
+          add.mutate(t, {
+            onSuccess: () => setTicker(""),
+            // On error: keep the input so the user can edit + retry.
+          });
         }}
       >
         <input

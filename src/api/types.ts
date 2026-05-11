@@ -32,15 +32,25 @@ export interface Period {
   is_53_week: boolean;
 }
 
+// Backend serializes via Metric::as_str() — these are the canonical
+// snake_case identifiers used over IPC.
 export type Metric =
-  | "Revenue" | "CostOfRevenue" | "GrossProfit"
-  | "OperatingIncome" | "NetIncome"
-  | "EpsBasic" | "EpsDiluted"
-  | "SharesOutstandingBasic" | "SharesOutstandingDiluted"
-  | "CashAndEquivalents" | "LongTermDebt" | "CurrentDebt" | "TotalDebt"
-  | "TotalAssets" | "TotalLiabilities" | "TotalEquity"
-  | "CashFromOperations" | "CapitalExpenditures" | "DepreciationAmortization"
-  | "HistoricalMarketCap" | "CurrentMarketCap";
+  | "revenue" | "cost_of_revenue" | "gross_profit"
+  | "operating_income" | "net_income"
+  | "eps_basic" | "eps_diluted"
+  | "shares_outstanding_basic" | "shares_outstanding_diluted"
+  | "cash_and_equivalents" | "long_term_debt" | "current_debt" | "total_debt"
+  | "total_assets" | "total_liabilities" | "total_equity"
+  | "cash_from_operations" | "capital_expenditures" | "depreciation_amortization"
+  | "historical_market_cap" | "current_market_cap";
+
+/** Pretty display label for a metric (e.g. "Net Income"). */
+export function prettyMetric(m: string): string {
+  return m
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
 
 export interface AppError {
   kind: string;

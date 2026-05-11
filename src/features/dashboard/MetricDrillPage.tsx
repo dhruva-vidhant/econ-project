@@ -3,29 +3,19 @@ import { Link, useParams } from "react-router-dom";
 
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
-import { fmtUsdCompact } from "@/api/types";
+import { fmtUsdCompact, prettyMetric } from "@/api/types";
 import { useCompanies, useMetricHistory } from "@/state/queries";
 
 const PRETTY: Record<string, string> = {
-  Revenue: "Revenue",
-  CostOfRevenue: "Cost of Revenue",
-  GrossProfit: "Gross Profit",
-  OperatingIncome: "Operating Income",
-  NetIncome: "Net Income",
-  EpsBasic: "EPS (Basic)",
-  EpsDiluted: "EPS (Diluted)",
-  CashAndEquivalents: "Cash & Equivalents",
-  LongTermDebt: "Long-term Debt",
-  CurrentDebt: "Current Debt",
-  TotalDebt: "Total Debt",
-  TotalAssets: "Total Assets",
-  TotalLiabilities: "Total Liabilities",
-  TotalEquity: "Total Equity",
-  CashFromOperations: "Cash from Operations",
-  CapitalExpenditures: "Capital Expenditures",
-  DepreciationAmortization: "Depreciation & Amortization",
-  HistoricalMarketCap: "Historical Market Cap",
-  CurrentMarketCap: "Current Market Cap",
+  cost_of_revenue: "Cost of Revenue",
+  eps_basic: "EPS (Basic)",
+  eps_diluted: "EPS (Diluted)",
+  cash_and_equivalents: "Cash & Equivalents",
+  long_term_debt: "Long-term Debt",
+  cash_from_operations: "Cash from Operations",
+  depreciation_amortization: "Depreciation & Amortization",
+  historical_market_cap: "Historical Market Cap",
+  current_market_cap: "Current Market Cap",
 };
 
 export default function MetricDrillPage() {
@@ -34,10 +24,10 @@ export default function MetricDrillPage() {
   const [openId, setOpenId] = useState<number | null>(null);
   const companies = useCompanies();
   const company = (companies.data ?? []).find((c) => c.ticker === ticker);
-  const history = useMetricHistory(company?.cik, metric ?? "Revenue", kind);
+  const history = useMetricHistory(company?.cik, metric ?? "revenue", kind);
 
   const series = history.data ?? [];
-  const label = (metric && PRETTY[metric]) ?? metric ?? "";
+  const label = (metric && (PRETTY[metric] ?? prettyMetric(metric))) ?? "";
 
   return (
     <>

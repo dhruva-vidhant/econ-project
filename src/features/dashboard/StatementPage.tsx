@@ -1,21 +1,21 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { fmtUsdCompact } from "@/api/types";
+import { fmtUsdCompact, prettyMetric } from "@/api/types";
 import { useCompanies, useMetricHistory } from "@/state/queries";
 
 const STATEMENT_METRICS: Record<string, string[]> = {
   income: [
-    "Revenue", "CostOfRevenue", "GrossProfit",
-    "OperatingIncome", "NetIncome",
-    "EpsBasic", "EpsDiluted",
+    "revenue", "cost_of_revenue", "gross_profit",
+    "operating_income", "net_income",
+    "eps_basic", "eps_diluted",
   ],
   balance: [
-    "TotalAssets", "TotalLiabilities", "TotalEquity",
-    "CashAndEquivalents", "LongTermDebt", "CurrentDebt", "TotalDebt",
+    "total_assets", "total_liabilities", "total_equity",
+    "cash_and_equivalents", "long_term_debt", "current_debt", "total_debt",
   ],
   cashflow: [
-    "CashFromOperations", "CapitalExpenditures", "DepreciationAmortization",
+    "cash_from_operations", "capital_expenditures", "depreciation_amortization",
   ],
 };
 
@@ -123,7 +123,7 @@ function StatementRow({
     <tr className="border-b border-border/30 last:border-b-0 hover:bg-bg/40">
       <td className="sticky left-0 bg-surface px-3 py-1.5">
         <Link to={`/c/${ticker}/metric/${metric}`} className="hover:text-accent">
-          {metric.replace(/([A-Z])/g, " $1").trim()}
+          {prettyMetric(metric)}
         </Link>
       </td>
       {cells.map((p, i) => (

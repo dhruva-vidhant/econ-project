@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
-import { fmtUsdCompact } from "@/api/types";
+import { fmtUsdCompact, prettyMetric } from "@/api/types";
 import {
   useCompanies,
   useDashboard,
@@ -12,7 +12,7 @@ import {
   useRefreshCompany,
 } from "@/state/queries";
 
-const HEADLINE_METRICS = ["Revenue", "NetIncome", "TotalAssets"] as const;
+const HEADLINE_METRICS = ["revenue", "net_income", "total_assets"] as const;
 
 export default function CompanyDashboardPage() {
   const { ticker } = useParams<{ ticker: string }>();
@@ -72,7 +72,7 @@ export default function CompanyDashboardPage() {
                 onClick={() => nav(`/c/${ticker}/metric/${w.metric}`)}
               >
                 <div className="text-[11px] uppercase tracking-wide text-muted">
-                  {w.metric.replace(/_/g, " ")}
+                  {prettyMetric(w.metric)}
                 </div>
                 <div className="my-1 font-mono text-xl">{fmtUsdCompact(w.value_micro)}</div>
                 <div className="text-[11px] text-muted">{w.period_label}</div>
@@ -117,7 +117,6 @@ export default function CompanyDashboardPage() {
                 cik={company.cik}
                 metric={m}
                 kind={chartKind}
-                onPointClick={(id) => setOpenLineage(id)}
               />
             ))}
           </div>
@@ -152,17 +151,15 @@ function ChartCard({
   cik,
   metric,
   kind,
-  onPointClick: _onPointClick,
 }: {
   cik: string;
   metric: string;
   kind: "annual" | "quarterly";
-  onPointClick: (id: number) => void;
 }) {
   const { data } = useMetricHistory(cik, metric, kind);
   return (
     <div>
-      <MetricChart series={data ?? []} title={metric.replace(/([A-Z])/g, " $1").trim()} height={220} />
+      <MetricChart series={data ?? []} title={prettyMetric(metric)} height={220} />
     </div>
   );
 }
