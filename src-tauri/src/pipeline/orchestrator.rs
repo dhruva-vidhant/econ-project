@@ -7,11 +7,11 @@ use chrono::{NaiveDate, Utc};
 use serde::Serialize;
 
 use crate::domain::{
-    AccessionNo, Cik, Company, FormType, IngestionEvent, NormalizedFact, Period, PeriodKind,
-    RawFact, Severity, SourceKind, Ticker,
+    AccessionNo, Cik, Company, Filing, FormType, IngestionEvent, Metric, NormalizedFact, Period,
+    PeriodKind, RawFact, Severity, Ticker,
 };
 use crate::errors::{PipelineError, SourceError};
-use crate::normalize::concept_map;
+use crate::normalize::{concept_map, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
@@ -31,7 +31,6 @@ pub struct IngestionSummary {
     pub events_recorded: usize,
 }
 
-/// Repository handles needed by the pipeline.
 pub struct IngestionDeps {
     pub sec: Arc<SecClient>,
     pub companies: Arc<dyn CompanyRepo>,
@@ -58,7 +57,12 @@ pub async fn ingest_company(
     let subs = submissions::fetch_submissions(&deps.sec, &cik).await?;
     let filings = submissions::to_filings(&cik, &subs);
 
-    // Persist Company first so FKs work for everything else.
+    // Wire `amends` field: an amendment's accession_no is structurally
+    // related to the original by SEC convention but we can't infer it
+    // without parsing per-filing metadata. For now, leave amends=None;
+    // supersession is selected by filed_at recency (resolution rule §8.1).
+    // Future: read each amendment's filing index XML to extract `original-of`.
+
     let company = Company {
         cik: cik.clone(),
         ticker: ticker.clone(),
@@ -71,29 +75,24 @@ pub async fn ingest_company(
     };
     deps.companies.upsert(&company).await?;
 
-    // Persist filings before facts (raw_fact has FK to filing.accession_no).
     let mut filings_ingested = 0usize;
-    let mut by_accn: HashMap<AccessionNo, crate::domain::Filing> = HashMap::new();
+    let mut by_accn: HashMap<AccessionNo, Filing> = HashMap::new();
     for f in &filings {
         deps.filings.upsert(f).await?;
         filings_ingested += 1;
         by_accn.insert(f.accession_no.clone(), f.clone());
     }
+    drop(filings);
 
     // ─── Download + Parse ───────────────────────────────────────────────
     let cf = companyfacts::fetch_companyfacts(&deps.sec, &cik).await?;
     let raw_facts = companyfacts::to_raw_facts(&cik, &cf);
 
-    // We can only insert raw_fact rows whose accession_no exists in the filing
-    // table (FK). companyfacts can reference accessions older than what
-    // submissions.recent returns (1000-row pagination); insert filing
-    // placeholders for any unknown accession.
     let mut raw_to_insert: Vec<RawFact> = Vec::with_capacity(raw_facts.len());
     let mut placeholders_made = 0usize;
     for f in raw_facts {
         if !by_accn.contains_key(&f.accession_no) {
-            // Fabricate a minimal filing row so the FK resolves. Form type "other".
-            let filing = crate::domain::Filing {
+            let filing = Filing {
                 accession_no: f.accession_no.clone(),
                 cik: cik.clone(),
                 form_type: FormType::Other("unknown".into()),
@@ -111,110 +110,155 @@ pub async fn ingest_company(
     }
     if placeholders_made > 0 {
         record_event(deps, &cik, None, "discover", Severity::Info, false,
-            format!("Created {placeholders_made} filing placeholders for accessions referenced by companyfacts beyond submissions.recent window."), &mut events).await?;
+            format!("Created {placeholders_made} filing placeholders for accessions outside submissions.recent."),
+            &mut events).await?;
     }
-
     let raw_facts_ingested = deps.raw_facts.upsert_many(&raw_to_insert).await?;
 
-    // Re-load raw_facts so we have their assigned ids per accession (we need
-    // source_fact_id to link normalized_fact rows).
-    let mut raw_by_accn: HashMap<AccessionNo, Vec<RawFact>> = HashMap::new();
+    // Re-load raw_facts grouped by accession so we have ids assigned.
+    let mut all_raw: Vec<RawFact> = Vec::new();
     for accn in by_accn.keys() {
         let v = deps.raw_facts.list_for_filing(accn).await?;
-        raw_by_accn.insert(accn.clone(), v);
+        all_raw.extend(v);
     }
 
     // ─── Normalize ───────────────────────────────────────────────────────
+    // (1) Quarterly facts via period reconciler.
+    let (quarter_values, _fy_facts_from_quarters) = reconcile_quarters(&all_raw);
     let mut normalized_count = 0usize;
-    // Group raw facts by (metric, period boundaries) and pick a primary.
-    // V1 strategy: prefer the most-recently-filed (`filed`) source for any given
-    // (metric, period_end / period_start) tuple. This roughly approximates the
-    // §8.1 resolution rules without yet implementing supersession-chain updates.
-    type Key = (crate::domain::Metric, Option<NaiveDate>, NaiveDate);
-    let mut best: HashMap<Key, RawFact> = HashMap::new();
-    for facts in raw_by_accn.values() {
-        for f in facts {
-            if let Some(metric) = concept_map::metric_for(&f.taxonomy, &f.concept) {
-                let key = (metric, f.period_start, f.period_end);
-                let take = match best.get(&key) {
-                    Some(existing) => f.filed > existing.filed,
-                    None => true,
-                };
-                if take {
-                    best.insert(key, f.clone());
-                }
+
+    for q in quarter_values {
+        let period = Period {
+            id: 0,
+            cik: cik.clone(),
+            fiscal_year: q.fy,
+            fiscal_quarter: q.fq,
+            fiscal_year_end: subs.fiscal_year_end.clone(),
+            start_date: q.period_start,
+            end_date: q.period_end,
+            kind: PeriodKind::Quarterly,
+            is_53_week: false,
+        };
+        let period_id = deps.periods.upsert_returning_id(&period).await?;
+        let value = apply_sign(q.metric, q.value);
+        let nf = NormalizedFact {
+            id: 0, cik: cik.clone(), metric: q.metric, period_id,
+            value, unit: "USD".into(),
+            source_fact_id: q.source_fact_id, source_kind: q.source_kind,
+            is_primary: true,
+            original_value: None, original_unit: None,
+            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
+            superseded_by: None,
+        };
+        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+            normalized_count += 1;
+            if q.derived {
+                record_event(deps, &cik, None, "normalize", Severity::Info, false,
+                    format!("Derived single-quarter {} for FY{} Q{} from YTD difference.",
+                        q.metric.as_str(), q.fy, q.fq),
+                    &mut events).await?;
             }
         }
     }
 
-    // Persist Period rows + NormalizedFact rows.
-    let fye = subs.fiscal_year_end.clone();
-    for ((metric, period_start, period_end), f) in best {
-        // V1 period reconciliation: derive (fy, fq) from fp + fy when present;
-        // skip when ambiguous (the diagnostic event surfaces it).
-        let (fy, fq, kind) = match (f.fy, f.fp.as_deref()) {
-            (Some(fy), Some("FY")) => (fy, 0u8, PeriodKind::Annual),
-            (Some(fy), Some("Q1")) => (fy, 1u8, PeriodKind::Quarterly),
-            (Some(fy), Some("Q2")) => (fy, 2u8, PeriodKind::Quarterly),
-            (Some(fy), Some("Q3")) => (fy, 3u8, PeriodKind::Quarterly),
-            (Some(fy), Some("Q4")) => (fy, 4u8, PeriodKind::Quarterly),
-            _ => continue, // skip non-canonical periods (CY frames, etc.)
+    // (2) Annual + instant facts: pick the most-recently-filed per
+    // (metric, fy) — which approximates §8.1 amendment-priority. For
+    // amendments, this also writes the supersession chain because
+    // insert_primary_with_supersession updates the previous primary.
+    type AnnualKey = (Metric, i32);
+    let mut best_annual: HashMap<AnnualKey, &RawFact> = HashMap::new();
+    type InstantKey = (Metric, i32, u8);
+    let mut best_instant: HashMap<InstantKey, &RawFact> = HashMap::new();
+
+    for f in &all_raw {
+        let metric = match concept_map::metric_for(&f.taxonomy, &f.concept) {
+            Some(m) => m,
+            None => continue,
         };
-
-        // Heuristic: skip YTD-style facts where period_end - period_start
-        // exceeds a typical quarter window for non-FY rows. (Proper YTD
-        // derivation is deferred — see `docs/followup.md`.)
-        if matches!(kind, PeriodKind::Quarterly) {
-            if let Some(start) = period_start {
-                let days = (period_end - start).num_days();
-                if days > 100 {
-                    record_event(
-                        deps, &cik, Some(&f.accession_no), "normalize", Severity::Info, false,
-                        format!("Skipped YTD-style fact for {:?} {:?} (span {} days). Single-quarter derivation deferred to follow-up pass.", metric, f.period_start, days),
-                        &mut events).await?;
-                    continue;
-                }
-            }
+        let fy = match f.fy { Some(x) => x, None => continue };
+        let fp = match &f.fp { Some(s) => s.as_str(), None => continue };
+        if metric.is_instant() {
+            let fq = match fp {
+                "FY" | "Q4" => 0u8, // attach to year-end period
+                "Q1" => 1,
+                "Q2" => 2,
+                "Q3" => 3,
+                _ => continue,
+            };
+            let key = (metric, fy, fq);
+            let take = match best_instant.get(&key) {
+                Some(prev) => f.filed > prev.filed,
+                None => true,
+            };
+            if take { best_instant.insert(key, f); }
+            continue;
         }
+        if fp != "FY" { continue; }
+        let key = (metric, fy);
+        let take = match best_annual.get(&key) {
+            Some(prev) => f.filed > prev.filed,
+            None => true,
+        };
+        if take { best_annual.insert(key, f); }
+    }
 
-        let start = period_start.unwrap_or(period_end);
+    // Persist annual rows.
+    for ((metric, fy), f) in best_annual {
+        let start = f.period_start.unwrap_or(f.period_end);
         let period = Period {
-            id: 0,
-            cik: cik.clone(),
-            fiscal_year: fy,
-            fiscal_quarter: fq,
-            fiscal_year_end: fye.clone(),
-            start_date: start,
-            end_date: period_end,
-            kind: kind.clone(),
-            is_53_week: false,
+            id: 0, cik: cik.clone(),
+            fiscal_year: fy, fiscal_quarter: 0,
+            fiscal_year_end: subs.fiscal_year_end.clone(),
+            start_date: start, end_date: f.period_end,
+            kind: PeriodKind::Annual,
+            is_53_week: Period::detect_53_week(start, f.period_end),
         };
         let period_id = deps.periods.upsert_returning_id(&period).await?;
-
         let value = apply_sign(metric, f.value_numeric);
-        let n = NormalizedFact {
-            id: 0,
-            cik: cik.clone(),
-            metric,
-            period_id,
-            value,
-            unit: f.unit.clone(),
-            source_fact_id: f.id,
-            source_kind: SourceKind::XbrlApi,
+        let nf = NormalizedFact {
+            id: 0, cik: cik.clone(), metric, period_id,
+            value, unit: f.unit.clone(),
+            source_fact_id: f.id, source_kind: f.source_kind,
             is_primary: true,
-            original_value: None,
-            original_unit: None,
-            fx_rate_micro: None,
-            fx_rate_source: None,
-            fx_rate_date: None,
+            original_value: None, original_unit: None,
+            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
             superseded_by: None,
         };
-        match deps.normalized_facts.insert_primary_with_supersession(&n).await {
-            Ok(_) => { normalized_count += 1; }
-            Err(_) => {
-                // Constraint violation (e.g., duplicate due to retry): skip.
-                continue;
+        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+            normalized_count += 1;
+        }
+    }
+
+    // Persist instant rows. Try to attach to an existing period; create a
+    // new annual stub if none.
+    for ((metric, fy, fq), f) in best_instant {
+        let pid = match deps.periods.get_id(&cik, fy, fq).await? {
+            Some(id) => id,
+            None => {
+                // Create an annual placeholder period anchored at the instant date.
+                let p = Period {
+                    id: 0, cik: cik.clone(),
+                    fiscal_year: fy, fiscal_quarter: fq,
+                    fiscal_year_end: subs.fiscal_year_end.clone(),
+                    start_date: f.period_end, end_date: f.period_end,
+                    kind: if fq == 0 { PeriodKind::Annual } else { PeriodKind::Quarterly },
+                    is_53_week: false,
+                };
+                deps.periods.upsert_returning_id(&p).await?
             }
+        };
+        let value = apply_sign(metric, f.value_numeric);
+        let nf = NormalizedFact {
+            id: 0, cik: cik.clone(), metric, period_id: pid,
+            value, unit: f.unit.clone(),
+            source_fact_id: f.id, source_kind: f.source_kind,
+            is_primary: true,
+            original_value: None, original_unit: None,
+            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
+            superseded_by: None,
+        };
+        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+            normalized_count += 1;
         }
     }
 
@@ -235,12 +279,8 @@ pub async fn ingest_company(
     Ok((company, summary))
 }
 
-/// Apply the §6.2 sign convention (mostly identity for V1).
-fn apply_sign(metric: crate::domain::Metric, value: i64) -> i64 {
-    use crate::domain::Metric;
+fn apply_sign(metric: Metric, value: i64) -> i64 {
     match metric {
-        // CapEx is reported as a payment (typically positive for "cash outflow")
-        // or as a negative cash-flow line; normalize to positive at storage.
         Metric::CapitalExpenditures => value.abs(),
         _ => value,
     }
@@ -278,13 +318,13 @@ mod tests {
 
     #[test]
     fn capex_sign_is_normalized_positive() {
-        assert_eq!(apply_sign(crate::domain::Metric::CapitalExpenditures, -1_000_000), 1_000_000);
-        assert_eq!(apply_sign(crate::domain::Metric::CapitalExpenditures, 1_000_000), 1_000_000);
+        assert_eq!(apply_sign(Metric::CapitalExpenditures, -1_000_000), 1_000_000);
+        assert_eq!(apply_sign(Metric::CapitalExpenditures, 1_000_000), 1_000_000);
     }
 
     #[test]
     fn other_metrics_keep_sign() {
-        assert_eq!(apply_sign(crate::domain::Metric::Revenue, 1_500_000), 1_500_000);
-        assert_eq!(apply_sign(crate::domain::Metric::NetIncome, -100_000), -100_000);
+        assert_eq!(apply_sign(Metric::Revenue, 1_500_000), 1_500_000);
+        assert_eq!(apply_sign(Metric::NetIncome, -100_000), -100_000);
     }
 }

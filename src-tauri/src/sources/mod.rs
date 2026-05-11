@@ -6,3 +6,4 @@ pub mod tickers;
 pub mod submissions;
 pub mod companyfacts;
 pub mod market_data;
+pub mod item_4_02;
