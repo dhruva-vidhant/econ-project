@@ -122,17 +122,18 @@ impl NormalizedFactRepo for SqliteNormalizedFactRepo {
 
     async fn current_series(&self, cik: &Cik, metric: Metric, kind: PeriodKind) -> Result<Vec<(Period, NormalizedFact)>, RepoError> {
         let g = self.pool.read()?;
-        let q = format!(
+        let q =
             "SELECT
               p.id, p.cik, p.fiscal_year, p.fiscal_quarter, p.fiscal_year_end,
               p.start_date, p.end_date, p.kind, p.is_53_week,
-              {COLS}
+              n.id, n.cik, n.metric, n.period_id, n.value, n.unit, n.source_fact_id,
+              n.source_kind, n.is_primary, n.original_value, n.original_unit,
+              n.fx_rate_micro, n.fx_rate_source, n.fx_rate_date, n.superseded_by
              FROM normalized_fact n
              JOIN period p ON p.id = n.period_id
              WHERE n.cik = ?1 AND n.metric = ?2 AND p.kind = ?3
                AND n.is_primary = 1 AND n.superseded_by IS NULL
-             ORDER BY p.start_date"
-        );
+             ORDER BY p.start_date".to_string();
         let mut stmt = g.conn().prepare(&q)?;
         let rows = stmt.query_map(
             rusqlite::params![cik.0, metric.as_str(), kind.as_str()],

@@ -27,7 +27,8 @@
       "Bash(sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path)",
       "Bash(tar -xzf /tmp/node.tar.gz -C /tmp/)",
       "Bash(npm --version)",
-      "Bash(npx --version)"
+      "Bash(npx --version)",
+      "Bash(md5 /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/02-home-with-aapl.png /Users/psrinivasan/projects/personal/econ_project/tests/e2e/screenshots/07-lineage-drawer.png)"
     ],
     "defaultMode": "bypassPermissions"
   },

@@ -128,6 +128,17 @@ pub async fn ingest_company(
     let mut normalized_count = 0usize;
 
     for q in quarter_values {
+        // Guard: a derived value computed by subtracting two facts that
+        // straddle a restatement can come out negative for a positive-only
+        // metric. Per the project's accuracy rule we'd rather have an
+        // explicit gap than a wrong number. Skip + diagnostic.
+        if q.derived && q.value < 0 && is_positive_only(q.metric) {
+            record_event(deps, &cik, None, "normalize", Severity::Warn, false,
+                format!("Skipped derived {} for FY{} Q{}: result {} would be negative for a positive-only metric (likely cross-restatement input mismatch).",
+                    q.metric.as_str(), q.fy, q.fq, q.value),
+                &mut events).await?;
+            continue;
+        }
         let period = Period {
             id: 0,
             cik: cik.clone(),
@@ -284,6 +295,32 @@ fn apply_sign(metric: Metric, value: i64) -> i64 {
         Metric::CapitalExpenditures => value.abs(),
         _ => value,
     }
+}
+
+/// Whether a metric should never legitimately be negative. Used to guard
+/// derived (subtraction-based) quarter values against cross-restatement
+/// inconsistencies — a negative result for these metrics indicates the
+/// inputs came from different restate states; skipping is more accurate
+/// than persisting a known-wrong value.
+fn is_positive_only(metric: Metric) -> bool {
+    matches!(
+        metric,
+        Metric::Revenue
+        | Metric::CostOfRevenue
+        | Metric::GrossProfit
+        | Metric::SharesOutstandingBasic
+        | Metric::SharesOutstandingDiluted
+        | Metric::CashAndEquivalents
+        | Metric::LongTermDebt
+        | Metric::CurrentDebt
+        | Metric::TotalDebt
+        | Metric::TotalAssets
+        | Metric::TotalLiabilities
+        | Metric::CapitalExpenditures
+        | Metric::DepreciationAmortization
+        | Metric::HistoricalMarketCap
+        | Metric::CurrentMarketCap
+    )
 }
 
 async fn record_event(

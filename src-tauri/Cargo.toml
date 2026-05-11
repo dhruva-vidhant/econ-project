@@ -43,6 +43,7 @@ scraper = "0.20"
 tempfile = "3.13"
 mockito = "1.5"
 tokio-test = "0.4"
+tauri = { version = "2.1", features = ["test"] }
 
 [features]
 default = ["custom-protocol"]
