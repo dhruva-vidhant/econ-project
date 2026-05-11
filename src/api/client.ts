@@ -4,6 +4,8 @@ import type {
   Company,
   DashboardPayload,
   IngestionEvent,
+  LineagePayload,
+  MetricSeriesPoint,
 } from "@/api/types";
 
 /**
@@ -36,4 +38,20 @@ export async function getIngestionEvents(
   limit: number,
 ): Promise<IngestionEvent[]> {
   return invoke("get_ingestion_events", { cik, limit });
+}
+
+export async function getMetricHistory(
+  cik: string,
+  metric: string,
+  kind: "annual" | "quarterly",
+): Promise<MetricSeriesPoint[]> {
+  return invoke("get_metric_history", { cik, metric, kind });
+}
+
+export async function getLineage(normalizedFactId: number): Promise<LineagePayload> {
+  return invoke("get_lineage", { normalizedFactId });
+}
+
+export async function refreshCompany(cik: string): Promise<AddCompanyResponse> {
+  return invoke("refresh_company", { cik });
 }

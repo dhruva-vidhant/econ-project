@@ -7,8 +7,10 @@ use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, Period
 use crate::errors::AppError;
 use crate::pipeline::{ingest_company, IngestionSummary};
 use crate::repos::company::CompanyRepo;
+use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
+use crate::repos::raw_fact::RawFactRepo;
 
 use super::state::AppState;
 
@@ -156,4 +158,74 @@ pub async fn get_supersession_chain(
         .supersession_chain(normalized_fact_id)
         .await
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn refresh_company(
+    state: State<'_, AppState>,
+    cik: String,
+) -> Result<AddCompanyResponse, AppError> {
+    let cik = Cik::from_any(&cik).map_err(AppError::invalid)?;
+    let company = state
+        .companies
+        .get_by_cik(&cik)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("company {cik} not found")))?;
+    let deps = state.pipeline_deps();
+    let (company2, summary) = ingest_company(&deps, &company.ticker).await?;
+    Ok(AddCompanyResponse { company: company2, summary })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LineagePayload {
+    pub primary: NormalizedFact,
+    pub raw_fact: crate::domain::RawFact,
+    pub filing: crate::domain::Filing,
+    pub supersession_chain: Vec<NormalizedFact>,
+}
+
+#[tauri::command]
+pub async fn get_lineage(
+    state: State<'_, AppState>,
+    normalized_fact_id: i64,
+) -> Result<LineagePayload, AppError> {
+    // Fetch the normalized_fact directly via a small inline query.
+    let g = state.pool.read().map_err(|e| AppError::Storage {
+        code: "storage", message: e.to_string(),
+    })?;
+    let nf: NormalizedFact = g.conn().query_row(
+        "SELECT id, cik, metric, period_id, value, unit, source_fact_id, source_kind, is_primary,
+                original_value, original_unit, fx_rate_micro, fx_rate_source, fx_rate_date, superseded_by
+         FROM normalized_fact WHERE id = ?1",
+        rusqlite::params![normalized_fact_id],
+        |r| {
+            Ok(NormalizedFact {
+                id: r.get(0)?,
+                cik: Cik(r.get(1)?),
+                metric: Metric::from_str(&r.get::<_, String>(2)?).unwrap_or(Metric::Revenue),
+                period_id: r.get(3)?,
+                value: r.get(4)?,
+                unit: r.get(5)?,
+                source_fact_id: r.get(6)?,
+                source_kind: crate::domain::SourceKind::from_str(&r.get::<_, String>(7)?).unwrap_or(crate::domain::SourceKind::XbrlApi),
+                is_primary: r.get::<_, i64>(8)? != 0,
+                original_value: r.get(9)?,
+                original_unit: r.get(10)?,
+                fx_rate_micro: r.get(11)?,
+                fx_rate_source: r.get(12)?,
+                fx_rate_date: r.get(13)?,
+                superseded_by: r.get(14)?,
+            })
+        },
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => AppError::not_found(format!("normalized_fact {normalized_fact_id} not found")),
+        other => AppError::Storage { code: "storage", message: other.to_string() },
+    })?;
+    drop(g);
+    let raw = state.raw_facts.get(nf.source_fact_id).await?
+        .ok_or_else(|| AppError::not_found("source raw_fact missing"))?;
+    let filing = state.filings.get(&raw.accession_no).await?
+        .ok_or_else(|| AppError::not_found("source filing missing"))?;
+    let chain = state.normalized_facts.supersession_chain(nf.id).await?;
+    Ok(LineagePayload { primary: nf, raw_fact: raw, filing, supersession_chain: chain })
 }

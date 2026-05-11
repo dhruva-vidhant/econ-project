@@ -88,6 +88,67 @@ export interface IngestionEvent {
   occurred_at: string;
 }
 
+export interface RawFact {
+  id: number;
+  cik: Cik;
+  accession_no: AccessionNo;
+  taxonomy: string;
+  concept: string;
+  unit: string;
+  value_numeric: number;
+  period_start?: string | null;
+  period_end: string;
+  is_instant: boolean;
+  fy?: number | null;
+  fp?: string | null;
+  filed?: string | null;
+  source_kind: "xbrl_api" | "xbrl_xml";
+  ingested_at: string;
+}
+
+export interface Filing {
+  accession_no: AccessionNo;
+  cik: Cik;
+  form_type: FormType;
+  filed_at: string;
+  period_of_report?: string | null;
+  is_amendment: boolean;
+  amends?: AccessionNo | null;
+  item_4_02_8k: boolean;
+}
+
+export interface NormalizedFact {
+  id: number;
+  cik: Cik;
+  metric: Metric;
+  period_id: number;
+  value: number;
+  unit: string;
+  source_fact_id: number;
+  source_kind: "xbrl_api" | "xbrl_xml";
+  is_primary: boolean;
+  original_value?: number | null;
+  original_unit?: string | null;
+  fx_rate_micro?: number | null;
+  fx_rate_source?: string | null;
+  fx_rate_date?: string | null;
+  superseded_by?: number | null;
+}
+
+export interface LineagePayload {
+  primary: NormalizedFact;
+  raw_fact: RawFact;
+  filing: Filing;
+  supersession_chain: NormalizedFact[];
+}
+
+export interface MetricSeriesPoint {
+  period: Period;
+  value: number;
+  source_kind: string;
+  normalized_fact_id: number;
+}
+
 /** Convert a stored micro-unit value to USD dollars (with sign preserved). */
 export function microToUsd(micro: number): number { return micro / 1_000_000; }
 

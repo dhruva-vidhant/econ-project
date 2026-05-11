@@ -6,6 +6,9 @@ export const QK = {
   companies: ["companies"] as const,
   dashboard: (cik: string) => ["dashboard", cik] as const,
   events: (cik: string | null) => ["events", cik] as const,
+  metricHistory: (cik: string, metric: string, kind: string) =>
+    ["metricHistory", cik, metric, kind] as const,
+  lineage: (id: number) => ["lineage", id] as const,
 };
 
 export function useCompanies() {
@@ -44,5 +47,37 @@ export function useRemoveCompany() {
     mutationFn: ({ cik, dropCache }: { cik: string; dropCache: boolean }) =>
       api.removeCompany(cik, dropCache),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK.companies }),
+  });
+}
+
+export function useMetricHistory(
+  cik: string | undefined,
+  metric: string,
+  kind: "annual" | "quarterly",
+) {
+  return useQuery({
+    queryKey: cik ? QK.metricHistory(cik, metric, kind) : ["metricHistory", "none"],
+    queryFn: () => api.getMetricHistory(cik!, metric, kind),
+    enabled: !!cik,
+  });
+}
+
+export function useLineage(normalizedFactId: number | undefined) {
+  return useQuery({
+    queryKey: normalizedFactId ? QK.lineage(normalizedFactId) : ["lineage", "none"],
+    queryFn: () => api.getLineage(normalizedFactId!),
+    enabled: !!normalizedFactId,
+  });
+}
+
+export function useRefreshCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.refreshCompany,
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: QK.companies });
+      qc.invalidateQueries({ queryKey: QK.dashboard(data.company.cik) });
+      qc.invalidateQueries({ queryKey: QK.events(data.company.cik) });
+    },
   });
 }
