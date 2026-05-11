@@ -47,7 +47,7 @@ struct Outcome {
 
 fn deps_for(pool: &Arc<Pool>) -> IngestionDeps {
     let sec = Arc::new(
-        SecClient::new("EconProject-MultiIntegration/0.1 contact@local", 5).unwrap(),
+        SecClient::new("EconProject-MultiIntegration/0.1 contact@econproject.example", 5).unwrap(),
     );
     IngestionDeps {
         sec,

@@ -34,8 +34,13 @@ impl AppState {
             std::fs::create_dir_all(parent)?;
         }
         let pool = Arc::new(Pool::open(&path)?);
+        // SEC's Fair Access policy (https://www.sec.gov/os/accessing-edgar-data)
+        // requires a User-Agent of the form "Identifier name@host.tld".
+        // The email must be syntactically valid (have a TLD); SEC returns
+        // 403 for UAs lacking a real email format. The `contact@local`
+        // we used previously failed that check.
         let user_agent = format!(
-            "EconProject/{} contact@local",
+            "EconProject/{} contact@econproject.example",
             env!("CARGO_PKG_VERSION"),
         );
         let sec = Arc::new(SecClient::new(user_agent, 5)?);

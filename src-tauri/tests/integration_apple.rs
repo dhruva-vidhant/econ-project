@@ -31,7 +31,7 @@ async fn ingest_aapl_against_real_sec() {
     let pool = Arc::new(Pool::open(&path).unwrap());
 
     let sec = Arc::new(
-        SecClient::new("EconProject-IntegrationTest/0.1 contact@local", 5).unwrap(),
+        SecClient::new("EconProject-IntegrationTest/0.1 contact@econproject.example", 5).unwrap(),
     );
     let companies: Arc<SqliteCompanyRepo> = Arc::new(SqliteCompanyRepo::new(pool.clone()));
     let filings: Arc<SqliteFilingRepo> = Arc::new(SqliteFilingRepo::new(pool.clone()));

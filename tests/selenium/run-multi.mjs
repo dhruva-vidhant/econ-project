@@ -23,11 +23,16 @@ const APP_DATA = path.join(os.homedir(), "Library/Application Support/com.econpr
 const PORT = 4445;
 const DRIVER_URL = `http://127.0.0.1:${PORT}`;
 
+// Tickers chosen by the user; each tests a different filer profile that
+// the live SEC ticker map (now reachable with the fixed User-Agent) can
+// resolve. The bundled fallback's ~30 entries did not include any of
+// these — the prior 403s were the symptom of a bad User-Agent rather
+// than a missing-from-fallback issue.
 const COMPANIES = [
-  { ticker: "MSFT",  name: "MICROSOFT CORP", reason: "Different fiscal year (June FYE)" },
-  { ticker: "COST",  name: "Costco Wholesale", reason: "53-week fiscal years" },
-  { ticker: "JPM",   name: "JPMorgan Chase",  reason: "Bank — concept-map coverage stress" },
-  { ticker: "BRK.B", name: "Berkshire Hathaway", reason: "Share-class ticker" },
+  { ticker: "LULU", reason: "Apparel retailer (Lululemon)" },
+  { ticker: "ZTS",  reason: "Spinoff (Zoetis), animal-health pharma" },
+  { ticker: "MOH",  reason: "Managed-care (Molina Healthcare)" },
+  { ticker: "WFC",  reason: "Bank (Wells Fargo) — has historical Item 4.02 8-Ks" },
 ];
 
 if (!existsSync(BINARY)) {
@@ -82,7 +87,14 @@ try {
     .withCapabilities({ browserName: "webkit", platformName: "macos" })
     .build();
 
-  await driver.wait(async () => /Saved companies/i.test(await driver.findElement(By.tagName("body")).getText()), 10000);
+  // Wait for the WebView to be ready and the React app to mount.
+  await wait(800);
+  await driver.wait(until.elementLocated(By.tagName("body")), 10000);
+  await driver.wait(async () => {
+    try {
+      return /Saved companies/i.test(await driver.findElement(By.tagName("body")).getText());
+    } catch { return false; }
+  }, 15000);
 
   for (const c of COMPANIES) {
     console.log(`\n── ${c.ticker} (${c.reason}) ──`);
@@ -101,23 +113,21 @@ try {
       await driver.findElement(By.xpath('//button[normalize-space(.)="Add"]')).click();
 
       // Wait up to 180s for the ingestion to complete and the row to appear.
+      // Matches by the row's anchor href (deterministic — independent of
+      // company name).
       console.log(`  [ingest] waiting for ${c.ticker} to land in saved list (real SEC fetch)…`);
+      const hrefXpath = `//a[contains(@href, "/c/${c.ticker.replace(".", "")}") and not(contains(@href, "/metric/"))]`;
       const t0 = Date.now();
-      await driver.wait(async () => {
-        const text = await driver.findElement(By.tagName("body")).getText();
-        // Diagnostic: print every 10 s.
+      try {
+        await driver.wait(until.elementLocated(By.xpath(hrefXpath)), 180000);
+      } catch (err) {
+        // Diagnostic: dump body text on failure.
         const elapsed = Math.floor((Date.now() - t0) / 1000);
-        if (elapsed > 0 && elapsed % 10 === 0) {
-          const namePart = c.name.split(" ")[0];
-          const hasName = text.toLowerCase().includes(namePart.toLowerCase());
-          const hasRemove = /remove/i.test(text);
-          const hasError = /not found|failed/i.test(text);
-          console.log(`    [${elapsed}s] hasName=${hasName} hasRemove=${hasRemove} hasError=${hasError}`);
-        }
-        // Match the row by company name (more reliable than ticker which appears in the input).
-        const namePart = c.name.split(" ")[0];
-        return text.toLowerCase().includes(namePart.toLowerCase()) && /remove/i.test(text);
-      }, 180000);
+        const text = await driver.findElement(By.tagName("body")).getText();
+        const hasError = /not found|failed/i.test(text);
+        console.log(`    [${elapsed}s] no row appeared. hasError=${hasError} body[0..400]: ${text.slice(0, 400)}`);
+        throw err;
+      }
       result.added = true;
       console.log(`  [ingest] ✓ added`);
     } catch (e) {
@@ -175,10 +185,13 @@ try {
       if (widgets.length === 0) throw new Error("no widgets to drill into");
       await widgets[0].click();
       await driver.wait(until.urlContains("/metric/"), 10000);
-      await driver.wait(async () => {
-        const t = await driver.findElement(By.tagName("body")).getText();
-        return /lineage/i.test(t);
-      }, 10000);
+      // Wait for an actual lineage button (not just the word "lineage" in
+      // some other context). Bump to 30 s to absorb chart-paint time on
+      // companies with long histories.
+      await driver.wait(
+        until.elementLocated(By.xpath('//button[contains(translate(., "LINEAGE", "lineage"), "lineage")]')),
+        30000,
+      );
       const lineageBtns = await driver.findElements(
         By.xpath('//button[contains(translate(., "LINEAGE", "lineage"), "lineage")]')
       );
@@ -211,7 +224,7 @@ try {
       await back.click();
       await wait(300);
       const link = await driver.findElement(By.xpath(
-        `//a[contains(., "${c.name.split(" ")[0]}") or contains(., "${c.ticker}")]`
+        `//a[contains(@href, "/c/${c.ticker.replace(".", "")}") and not(contains(@href, "/metric/"))]`
       ));
       await link.click();
       const diagXpath = '//a[contains(@href,"/diagnostics")]';
