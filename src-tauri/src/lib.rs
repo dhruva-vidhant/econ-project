@@ -30,15 +30,15 @@ pub fn run() {
         )
         .init();
 
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init());
-    // Embedded W3C WebDriver server — only in debug builds, only when
-    // the harness wires up TAURI_WEBDRIVER_PORT. Works on macOS via
-    // WKWebView native APIs (no external driver process needed).
-    #[cfg(debug_assertions)]
-    {
-        builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
-    }
+    // Embedded W3C WebDriver server, gated on the `e2e-webdriver`
+    // feature. Production builds (`cargo build` / `npm run tauri build`)
+    // do NOT include this dependency at all — the crate is `optional`
+    // in Cargo.toml and only linked when the feature is on. Activate
+    // with `cargo build --features e2e-webdriver` for E2E test runs.
+    #[cfg(feature = "e2e-webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     builder
         .setup(ipc::setup)
         .invoke_handler(ipc::handler())

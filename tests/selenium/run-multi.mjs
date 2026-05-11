@@ -32,7 +32,7 @@ const COMPANIES = [
 
 if (!existsSync(BINARY)) {
   console.error(`[fatal] binary not found: ${BINARY}`);
-  console.error("Run: cargo build --manifest-path src-tauri/Cargo.toml");
+  console.error("Run: cargo build --manifest-path src-tauri/Cargo.toml --features e2e-webdriver");
   process.exit(2);
 }
 mkdirSync(SCREEN_DIR, { recursive: true });
