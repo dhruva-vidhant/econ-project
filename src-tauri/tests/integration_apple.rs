@@ -16,6 +16,7 @@ use econ_project_lib::db::Pool;
 use econ_project_lib::domain::{Metric, PeriodKind, Ticker};
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::{CompanyRepo, SqliteCompanyRepo};
+use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
 use econ_project_lib::repos::filing::{FilingRepo, SqliteFilingRepo};
 use econ_project_lib::repos::ingestion_event::{IngestionEventRepo, SqliteIngestionEventRepo};
 use econ_project_lib::repos::normalized_fact::{NormalizedFactRepo, SqliteNormalizedFactRepo};
@@ -40,6 +41,7 @@ async fn ingest_aapl_against_real_sec() {
     let normalized_facts: Arc<SqliteNormalizedFactRepo> = Arc::new(SqliteNormalizedFactRepo::new(pool.clone()));
     let events: Arc<SqliteIngestionEventRepo> = Arc::new(SqliteIngestionEventRepo::new(pool.clone()));
 
+    let derived_metrics: Arc<SqliteDerivedMetricRepo> = Arc::new(SqliteDerivedMetricRepo::new(pool.clone()));
     let deps = IngestionDeps {
         sec,
         companies: companies.clone(),
@@ -47,6 +49,7 @@ async fn ingest_aapl_against_real_sec() {
         periods: periods.clone(),
         raw_facts: raw_facts.clone(),
         normalized_facts: normalized_facts.clone(),
+        derived_metrics: derived_metrics.clone(),
         events: events.clone(),
     };
 

@@ -69,7 +69,10 @@ export default function MetricDrillPage() {
                 <tr><td colSpan={5} className="px-3 py-6 text-center text-muted">No values for this metric.</td></tr>
               )}
               {series.map((p) => (
-                <tr key={p.normalized_fact_id} className="border-b border-border/30 last:border-b-0 hover:bg-bg/40">
+                // Use period.id as the row key — derived values share
+                // normalized_fact_id=-1 across periods, but each period
+                // is unique, so this is the right key for React.
+                <tr key={p.period.id} className="border-b border-border/30 last:border-b-0 hover:bg-bg/40">
                   <td className="px-3 py-1.5 font-mono">
                     {p.period.kind === "quarterly"
                       ? `FY${p.period.fiscal_year} Q${p.period.fiscal_quarter}`
@@ -79,12 +82,18 @@ export default function MetricDrillPage() {
                   <td className="px-3 py-1.5 text-right font-mono">{fmtUsdCompact(p.value)}</td>
                   <td className="px-3 py-1.5 text-muted">{p.source_kind}</td>
                   <td className="px-3 py-1.5 text-right">
-                    <button
-                      className="text-xs text-accent hover:underline"
-                      onClick={() => setOpenId(p.normalized_fact_id)}
-                    >
-                      lineage
-                    </button>
+                    {p.normalized_fact_id > 0 ? (
+                      <button
+                        className="text-xs text-accent hover:underline"
+                        onClick={() => setOpenId(p.normalized_fact_id)}
+                      >
+                        lineage
+                      </button>
+                    ) : (
+                      <span className="text-xs text-muted" title="Derived value (e.g., bank-revenue formula)">
+                        derived
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

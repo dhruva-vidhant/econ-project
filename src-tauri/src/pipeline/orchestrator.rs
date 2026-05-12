@@ -7,12 +7,13 @@ use chrono::{NaiveDate, Utc};
 use serde::Serialize;
 
 use crate::domain::{
-    AccessionNo, Cik, Company, Filing, FormType, IngestionEvent, Metric, NormalizedFact, Period,
-    PeriodKind, RawFact, Severity, Ticker,
+    AccessionNo, Cik, Company, DerivedMetric, Filing, FormType, IngestionEvent, Metric,
+    NormalizedFact, Period, PeriodKind, RawFact, Severity, Ticker,
 };
 use crate::errors::{PipelineError, SourceError};
 use crate::normalize::{concept_map, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
+use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
@@ -38,6 +39,7 @@ pub struct IngestionDeps {
     pub periods: Arc<dyn PeriodRepo>,
     pub raw_facts: Arc<dyn RawFactRepo>,
     pub normalized_facts: Arc<dyn NormalizedFactRepo>,
+    pub derived_metrics: Arc<dyn DerivedMetricRepo>,
     pub events: Arc<dyn IngestionEventRepo>,
 }
 
@@ -273,8 +275,17 @@ pub async fn ingest_company(
         }
     }
 
+    // ── Bank revenue derivation ─────────────────────────────────────────
+    // For periods where the canonical Revenue concept-map didn't yield
+    // anything but bank-input metrics are present, derive Revenue per
+    // the resolution order:
+    //   2. us-gaap:Revenues               (handled by normal pipeline)
+    //   3. NetInterestIncome + NoninterestIncome
+    //   4. (InterestIncomeOperating - InterestExpense) + NoninterestIncome
+    let derived_revenue_count = derive_bank_revenue(deps, &cik, &mut events).await?;
+
     record_event(deps, &cik, None, "persist", Severity::Info, false,
-        format!("Ingestion complete: {filings_ingested} filings, {raw_facts_ingested} raw facts, {normalized_count} normalized facts."),
+        format!("Ingestion complete: {filings_ingested} filings, {raw_facts_ingested} raw facts, {normalized_count} normalized facts, {derived_revenue_count} bank-revenue derivations."),
         &mut events).await?;
 
     deps.companies.touch_refreshed(&cik).await?;
@@ -321,6 +332,79 @@ fn is_positive_only(metric: Metric) -> bool {
         | Metric::HistoricalMarketCap
         | Metric::CurrentMarketCap
     )
+}
+
+/// Per the bank-revenue resolution order:
+///   1. (deferred — explicit bank total revenue concept; see followup.md)
+///   2. `us-gaap:Revenues` (already handled by the canonical concept map)
+///   3. `NetInterestIncome + NoninterestIncome`
+///   4. `(InterestIncomeOperating - InterestExpense) + NoninterestIncome`
+///
+/// Steps 3 and 4 fire only when no direct Revenue normalized_fact exists
+/// for a (cik, period_id). Results are persisted to `derived_metric` with
+/// `formula_id = "bank_revenue_v1"` and merged into Revenue queries at
+/// read time (see ipc::commands::get_metric_history /
+/// ipc::commands::get_dashboard).
+async fn derive_bank_revenue(
+    deps: &IngestionDeps,
+    cik: &Cik,
+    events: &mut usize,
+) -> Result<usize, PipelineError> {
+    let mut count = 0usize;
+    let periods = deps.periods.list_for_cik(cik, None).await?;
+    for p in periods {
+        // Skip periods that already have a direct Revenue value.
+        if deps
+            .normalized_facts
+            .current_value(cik, Metric::Revenue, p.id)
+            .await?
+            .is_some()
+        {
+            continue;
+        }
+        // Look up the bank inputs.
+        let nii = deps.normalized_facts.current_value(cik, Metric::NetInterestIncome, p.id).await?;
+        let noni = deps.normalized_facts.current_value(cik, Metric::NoninterestIncome, p.id).await?;
+        let iio = deps.normalized_facts.current_value(cik, Metric::InterestIncomeOperating, p.id).await?;
+        let ie = deps.normalized_facts.current_value(cik, Metric::InterestExpense, p.id).await?;
+
+        let derived = match (nii.as_ref(), noni.as_ref(), iio.as_ref(), ie.as_ref()) {
+            // Resolution order step 3: NetInterestIncome + NoninterestIncome
+            (Some(nii), Some(noni), _, _) => Some((nii.value.saturating_add(noni.value), "step3")),
+            // Step 4: (InterestIncomeOperating - InterestExpense) + NoninterestIncome
+            (None, Some(noni), Some(iio), Some(ie)) => {
+                let net = iio.value.saturating_sub(ie.value);
+                Some((net.saturating_add(noni.value), "step4"))
+            }
+            _ => None,
+        };
+
+        if let Some((value, step)) = derived {
+            // Sanity guard: bank revenue is always positive. Skip + log if not.
+            if value <= 0 {
+                record_event(
+                    deps, cik, None, "normalize", Severity::Warn, false,
+                    format!(
+                        "Skipped bank-revenue derivation for FY{} Q{} ({}): value {} ≤ 0",
+                        p.fiscal_year, p.fiscal_quarter, step, value,
+                    ),
+                    events,
+                ).await?;
+                continue;
+            }
+            let dm = DerivedMetric {
+                id: 0,
+                cik: cik.clone(),
+                formula_id: "bank_revenue_v1".to_string(),
+                period_id: p.id,
+                value: Some(value),
+                is_complete: true,
+            };
+            deps.derived_metrics.upsert(&dm).await?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 async fn record_event(

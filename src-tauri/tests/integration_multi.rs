@@ -56,6 +56,7 @@ fn deps_for(pool: &Arc<Pool>) -> IngestionDeps {
         periods: Arc::new(SqlitePeriodRepo::new(pool.clone())),
         raw_facts: Arc::new(SqliteRawFactRepo::new(pool.clone())),
         normalized_facts: Arc::new(SqliteNormalizedFactRepo::new(pool.clone())),
+        derived_metrics: Arc::new(econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo::new(pool.clone())),
         events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
     }
 }

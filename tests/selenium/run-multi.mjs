@@ -179,12 +179,28 @@ try {
 
     await screenshot(driver, `${c.ticker.replace(".", "_")}-dashboard`);
 
-    // Click the first metric widget → drill page → lineage drawer.
+    // Click the metric widget for "Revenue" (always the first metric in
+    // the dashboard's headline list). Using a text-based locator instead
+    // of widgets[0] because the widget grid order can flicker briefly
+    // between "loading" and "loaded" states; clicking by visible text
+    // is deterministic.
     try {
       const widgets = await driver.findElements(By.css("section.grid button"));
       if (widgets.length === 0) throw new Error("no widgets to drill into");
+      // Diagnostic: log what the first widget is.
+      const firstText = await widgets[0].getText();
+      console.log(`  [drill] clicking first widget; text='${firstText.slice(0, 50).replace(/\n/g, " ")}'`);
       await widgets[0].click();
-      await driver.wait(until.urlContains("/metric/"), 10000);
+      // Some browsers occasionally swallow the first click in our
+      // WebDriver harness when the React tree just remounted. Retry
+      // once if URL doesn't advance within 3 s.
+      try {
+        await driver.wait(until.urlContains("/metric/"), 3000);
+      } catch {
+        console.log(`  [drill] first click didn't navigate; retrying`);
+        await widgets[0].click();
+        await driver.wait(until.urlContains("/metric/"), 10000);
+      }
       // Wait for an actual lineage button (not just the word "lineage" in
       // some other context). Bump to 30 s to absorb chart-paint time on
       // companies with long histories.

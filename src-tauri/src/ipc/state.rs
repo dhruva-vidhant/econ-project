@@ -65,6 +65,7 @@ impl AppState {
             periods: self.periods.clone(),
             raw_facts: self.raw_facts.clone(),
             normalized_facts: self.normalized_facts.clone(),
+            derived_metrics: self.derived_metrics.clone(),
             events: self.events.clone(),
         }
     }

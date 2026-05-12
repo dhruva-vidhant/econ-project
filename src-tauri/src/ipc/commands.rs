@@ -3,10 +3,13 @@
 use serde::Serialize;
 use tauri::State;
 
+use std::collections::HashSet;
+
 use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, Period, PeriodKind, Ticker};
 use crate::errors::AppError;
 use crate::pipeline::{ingest_company, IngestionSummary};
 use crate::repos::company::CompanyRepo;
+use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
@@ -69,8 +72,21 @@ pub async fn get_metric_history(
         .ok_or_else(|| AppError::invalid(format!("unknown metric: {metric}")))?;
     let kind = PeriodKind::from_str(&kind)
         .ok_or_else(|| AppError::invalid(format!("unknown period kind: {kind}")))?;
-    let series = state.normalized_facts.current_series(&cik, metric, kind).await?;
-    Ok(series
+    revenue_aware_series(state.inner(), &cik, metric, kind).await
+}
+
+/// Like `current_series` but for Revenue specifically, fills any
+/// missing periods with the bank-derived value (formula_id =
+/// `bank_revenue_v1`) when present in `derived_metric`. Other metrics
+/// pass through unchanged. Result is sorted by `period.start_date`.
+async fn revenue_aware_series(
+    state: &AppState,
+    cik: &Cik,
+    metric: Metric,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    let direct = state.normalized_facts.current_series(cik, metric, kind.clone()).await?;
+    let mut out: Vec<MetricSeriesPoint> = direct
         .into_iter()
         .map(|(p, n)| MetricSeriesPoint {
             period: p,
@@ -78,7 +94,29 @@ pub async fn get_metric_history(
             source_kind: n.source_kind.as_str().into(),
             normalized_fact_id: n.id,
         })
-        .collect())
+        .collect();
+
+    if matches!(metric, Metric::Revenue) {
+        let covered: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
+        let derived = state.derived_metrics.series(cik, "bank_revenue_v1", kind).await?;
+        for (period, dm) in derived {
+            if covered.contains(&period.id) { continue; }
+            if let Some(value) = dm.value {
+                out.push(MetricSeriesPoint {
+                    period,
+                    value,
+                    source_kind: "derived".into(),
+                    // Sentinel: derived rows have no underlying single
+                    // normalized_fact id. The lineage drawer treats this
+                    // value as a derivation and skips the single-fact
+                    // walk; see followup.md for richer derivation lineage.
+                    normalized_fact_id: -1,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,20 +152,17 @@ pub async fn get_dashboard(
         Metric::TotalAssets,
         Metric::TotalLiabilities,
     ] {
-        let series = state
-            .normalized_facts
-            .current_series(&cik, *metric, PeriodKind::Annual)
-            .await?;
+        let series = revenue_aware_series(state.inner(), &cik, *metric, PeriodKind::Annual).await?;
         if series.is_empty() { continue; }
         let history: Vec<(String, i64)> = series
             .iter()
-            .map(|(p, n)| (format!("FY{}", p.fiscal_year), n.value))
+            .map(|p| (format!("FY{}", p.period.fiscal_year), p.value))
             .collect();
         let last = series.last().unwrap();
         widgets.push(DashboardWidget {
             metric: metric.as_str().into(),
-            period_label: format!("FY{}", last.0.fiscal_year),
-            value_micro: last.1.value,
+            period_label: format!("FY{}", last.period.fiscal_year),
+            value_micro: last.value,
             history,
         });
     }

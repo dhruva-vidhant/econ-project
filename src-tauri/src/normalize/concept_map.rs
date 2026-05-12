@@ -66,6 +66,23 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
             ("us-gaap", "DepreciationAndAmortization"),
             ("us-gaap", "DepreciationDepletionAndAmortization"),
         ],
+        // Bank-revenue inputs. Used by the `bank_revenue_v1` derivation
+        // (see pipeline::orchestrator) when canonical Revenue is missing.
+        Metric::NetInterestIncome => &[
+            ("us-gaap", "InterestIncomeExpenseNet"),
+            ("us-gaap", "InterestIncomeExpenseAfterProvisionForLoanLoss"),
+        ],
+        Metric::NoninterestIncome => &[
+            ("us-gaap", "NoninterestIncome"),
+            ("us-gaap", "NonInterestIncome"),
+        ],
+        Metric::InterestIncomeOperating => &[
+            ("us-gaap", "InterestAndDividendIncomeOperating"),
+            ("us-gaap", "InterestIncomeOperating"),
+        ],
+        Metric::InterestExpense => &[
+            ("us-gaap", "InterestExpense"),
+        ],
         Metric::HistoricalMarketCap | Metric::CurrentMarketCap => &[],
     }
 }

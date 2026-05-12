@@ -25,6 +25,12 @@ pub enum Metric {
     CashFromOperations,
     CapitalExpenditures,
     DepreciationAmortization,
+    // Bank-revenue inputs (used when canonical Revenue is missing for a
+    // bank-style filer; see `bank_revenue_v1` derivation)
+    NetInterestIncome,
+    NoninterestIncome,
+    InterestIncomeOperating,
+    InterestExpense,
     // Market (derived)
     HistoricalMarketCap,
     CurrentMarketCap,
@@ -52,6 +58,10 @@ impl Metric {
             Metric::CashFromOperations => "cash_from_operations",
             Metric::CapitalExpenditures => "capital_expenditures",
             Metric::DepreciationAmortization => "depreciation_amortization",
+            Metric::NetInterestIncome => "net_interest_income",
+            Metric::NoninterestIncome => "noninterest_income",
+            Metric::InterestIncomeOperating => "interest_income_operating",
+            Metric::InterestExpense => "interest_expense",
             Metric::HistoricalMarketCap => "historical_market_cap",
             Metric::CurrentMarketCap => "current_market_cap",
         }
@@ -78,6 +88,10 @@ impl Metric {
             "cash_from_operations" => Metric::CashFromOperations,
             "capital_expenditures" => Metric::CapitalExpenditures,
             "depreciation_amortization" => Metric::DepreciationAmortization,
+            "net_interest_income" => Metric::NetInterestIncome,
+            "noninterest_income" => Metric::NoninterestIncome,
+            "interest_income_operating" => Metric::InterestIncomeOperating,
+            "interest_expense" => Metric::InterestExpense,
             "historical_market_cap" => Metric::HistoricalMarketCap,
             "current_market_cap" => Metric::CurrentMarketCap,
             _ => return None,
@@ -93,6 +107,8 @@ impl Metric {
         Metric::CashAndEquivalents, Metric::LongTermDebt, Metric::CurrentDebt,
         Metric::TotalDebt, Metric::TotalAssets, Metric::TotalLiabilities, Metric::TotalEquity,
         Metric::CashFromOperations, Metric::CapitalExpenditures, Metric::DepreciationAmortization,
+        Metric::NetInterestIncome, Metric::NoninterestIncome,
+        Metric::InterestIncomeOperating, Metric::InterestExpense,
         Metric::HistoricalMarketCap, Metric::CurrentMarketCap,
     ];
 
