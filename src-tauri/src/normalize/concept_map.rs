@@ -13,15 +13,18 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
             ("us-gaap", "SalesRevenueNet"),
             ("us-gaap", "SalesRevenueGoodsNet"),
         ],
-        // CostOfRevenue / GrossProfit are not concepts banks file; their
-        // income statements have NetInterestIncome and NoninterestIncome
-        // rather than a cost-of-goods structure. Leaving the metric blank
-        // for banks is more accurate than mapping to a non-equivalent
-        // concept.
         Metric::CostOfRevenue => &[
             ("us-gaap", "CostOfRevenue"),
             ("us-gaap", "CostOfGoodsAndServicesSold"),
             ("us-gaap", "CostOfGoodsSold"),
+            // Bank fallback: banks don't have a cost-of-goods structure.
+            // NoninterestExpense (salaries, occupancy, tech, professional
+            // services, etc.) is the closest analog — operating costs
+            // incurred to generate revenue. Caveat: this excludes the
+            // provision for credit losses, which some bank-investor
+            // models treat as an additional cost of revenue. We surface
+            // operating expenses only; the provision is left aside.
+            ("us-gaap", "NoninterestExpense"),
         ],
         Metric::GrossProfit => &[("us-gaap", "GrossProfit")],
         Metric::OperatingIncome => &[
@@ -86,6 +89,12 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::DepreciationAmortization => &[
             ("us-gaap", "DepreciationAndAmortization"),
             ("us-gaap", "DepreciationDepletionAndAmortization"),
+            // Bank fallback: WFC and other large banks file
+            // DepreciationAmortizationAndAccretionNet quarterly (and
+            // FY), while the canonical DepreciationAndAmortization is
+            // only filed annually. Adding this fallback fills the
+            // quarterly series.
+            ("us-gaap", "DepreciationAmortizationAndAccretionNet"),
         ],
         // Bank-revenue inputs. Used by the `bank_revenue_v1` derivation
         // (see pipeline::orchestrator) when canonical Revenue is missing.

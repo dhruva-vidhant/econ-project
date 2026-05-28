@@ -75,13 +75,14 @@ pub async fn get_metric_history(
     revenue_aware_series(state.inner(), &cik, metric, kind).await
 }
 
-/// Like `current_series` but with two read-time derivations layered on top:
+/// Like `current_series` but with read-time derivations layered on top:
 ///
 /// - **Revenue**: fills missing periods from `derived_metric` rows with
 ///   `formula_id = "bank_revenue_v1"` (see pipeline::orchestrator).
 /// - **TotalDebt**: computed as `LongTermDebt + CurrentDebt` per period.
-///   We treat a missing input as 0; if both are missing, no row is
-///   emitted for that period.
+///   Missing input treated as 0; row omitted only if both inputs missing.
+/// - **GrossProfit**: when no directly-filed value exists, computed as
+///   `Revenue - CostOfRevenue` per period. Both inputs required.
 ///
 /// Other metrics pass through unchanged. Result is sorted by
 /// `period.start_date`.
@@ -93,6 +94,9 @@ async fn revenue_aware_series(
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
     if matches!(metric, Metric::TotalDebt) {
         return total_debt_series(state, cik, kind).await;
+    }
+    if matches!(metric, Metric::GrossProfit) {
+        return gross_profit_series(state, cik, kind).await;
     }
 
     let direct = state.normalized_facts.current_series(cik, metric, kind.clone()).await?;
@@ -126,6 +130,67 @@ async fn revenue_aware_series(
         }
         out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
     }
+    Ok(out)
+}
+
+/// Gross profit is `Revenue - CostOfRevenue` per period, but only when
+/// no directly-filed `GrossProfit` fact is present. Companies that file
+/// GrossProfit directly (e.g., most retailers, manufacturers) keep their
+/// authoritative value; companies that don't (banks, some service-only
+/// filers) get the derived value when both Revenue and CostOfRevenue
+/// are available.
+async fn gross_profit_series(
+    state: &AppState,
+    cik: &Cik,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    use std::collections::{BTreeMap, HashSet};
+
+    // Direct GrossProfit facts win when present.
+    let direct = state
+        .normalized_facts
+        .current_series(cik, Metric::GrossProfit, kind.clone())
+        .await?;
+    let mut out: Vec<MetricSeriesPoint> = direct
+        .into_iter()
+        .map(|(p, n)| MetricSeriesPoint {
+            period: p,
+            value: n.value,
+            source_kind: n.source_kind.as_str().into(),
+            normalized_fact_id: n.id,
+        })
+        .collect();
+    let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
+
+    // For periods without a direct fact: derive Revenue - CostOfRevenue.
+    // Box the recursive call (via Box::pin) so the future has a known size.
+    let rev = Box::pin(revenue_aware_series(state, cik, Metric::Revenue, kind.clone())).await?;
+    let cor = state
+        .normalized_facts
+        .current_series(cik, Metric::CostOfRevenue, kind)
+        .await?;
+
+    let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
+    for p in rev {
+        if direct_periods.contains(&p.period.id) { continue; }
+        by_pid.entry(p.period.id).or_insert((p.period.clone(), None, None)).1 = Some(p.value);
+    }
+    for (p, n) in cor {
+        if direct_periods.contains(&p.id) { continue; }
+        by_pid.entry(p.id).or_insert((p, None, None)).2 = Some(n.value);
+    }
+
+    for (_, (period, rev_v, cor_v)) in by_pid {
+        if let (Some(r), Some(c)) = (rev_v, cor_v) {
+            out.push(MetricSeriesPoint {
+                period,
+                value: r.saturating_sub(c),
+                source_kind: "derived".into(),
+                normalized_fact_id: -1,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
     Ok(out)
 }
 
