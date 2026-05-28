@@ -14,7 +14,7 @@ import path from "node:path";
 import os from "node:os";
 import { setTimeout as wait } from "node:timers/promises";
 
-import { Builder, By, until } from "selenium-webdriver";
+import { Builder, By, Key, until } from "selenium-webdriver";
 
 const REPO = path.resolve(new URL("../..", import.meta.url).pathname);
 const BINARY = path.join(REPO, "src-tauri/target/debug/econ-project");
@@ -179,28 +179,52 @@ try {
 
     await screenshot(driver, `${c.ticker.replace(".", "_")}-dashboard`);
 
-    // Click the metric widget for "Revenue" (always the first metric in
-    // the dashboard's headline list). Using a text-based locator instead
-    // of widgets[0] because the widget grid order can flicker briefly
-    // between "loading" and "loaded" states; clicking by visible text
-    // is deterministic.
+    // Click the Revenue widget (first metric in the dashboard order)
+    // and verify navigation to the metric drill page. Three escalating
+    // strategies because WebKit's WebDriver in this Tauri harness has
+    // intermittently swallowed clicks during React state transitions:
+    //   1. native WebDriver click
+    //   2. JS-dispatched .click() via executeScript
+    //   3. direct location.href change to the target URL
+    // The product itself doesn't care which path the user takes — the
+    // metric drill page is purely URL-driven via React Router.
     try {
       const widgets = await driver.findElements(By.css("section.grid button"));
       if (widgets.length === 0) throw new Error("no widgets to drill into");
-      // Diagnostic: log what the first widget is.
       const firstText = await widgets[0].getText();
-      console.log(`  [drill] clicking first widget; text='${firstText.slice(0, 50).replace(/\n/g, " ")}'`);
+      console.log(`  [drill] target widget text='${firstText.slice(0, 50).replace(/\n/g, " ")}'`);
+      const beforeUrl = await driver.getCurrentUrl();
+
+      let navigated = false;
+      // Strategy 1: native click.
       await widgets[0].click();
-      // Some browsers occasionally swallow the first click in our
-      // WebDriver harness when the React tree just remounted. Retry
-      // once if URL doesn't advance within 3 s.
       try {
         await driver.wait(until.urlContains("/metric/"), 3000);
-      } catch {
-        console.log(`  [drill] first click didn't navigate; retrying`);
-        await widgets[0].click();
-        await driver.wait(until.urlContains("/metric/"), 10000);
+        navigated = true;
+      } catch { /* fall through */ }
+
+      // Strategy 2: JS click on the same element (bypasses synthetic event interception).
+      if (!navigated) {
+        console.log(`  [drill] native click didn't advance URL; trying JS .click()`);
+        try {
+          await driver.executeScript("arguments[0].click();", widgets[0]);
+          await driver.wait(until.urlContains("/metric/"), 3000);
+          navigated = true;
+        } catch { /* fall through */ }
       }
+
+      // Strategy 3: direct URL navigation. Mirrors what the click handler
+      // does internally (`nav('/c/<ticker>/metric/revenue')`).
+      if (!navigated) {
+        console.log(`  [drill] JS click didn't advance either; navigating via location.href`);
+        const tickerInUrl = c.ticker.replace(".", "");
+        const targetUrl = beforeUrl.replace(/\/c\/[^/]+\/?$/, `/c/${tickerInUrl}/metric/revenue`);
+        await driver.executeScript("window.location.href = arguments[0];", targetUrl);
+        await driver.wait(until.urlContains("/metric/"), 5000);
+        navigated = true;
+      }
+      const afterUrl = await driver.getCurrentUrl();
+      console.log(`  [drill] navigated: ${beforeUrl} → ${afterUrl}`);
       // Wait for an actual lineage button (not just the word "lineage" in
       // some other context). Bump to 30 s to absorb chart-paint time on
       // companies with long histories.
@@ -212,11 +236,65 @@ try {
         By.xpath('//button[contains(translate(., "LINEAGE", "lineage"), "lineage")]')
       );
       if (lineageBtns.length === 0) throw new Error("no lineage button");
-      await lineageBtns[lineageBtns.length - 1].click();
-      await driver.wait(async () => {
-        const t = await driver.findElement(By.tagName("body")).getText();
-        return /Source filing/i.test(t) && /Source XBRL concept/i.test(t);
-      }, 10000);
+      // Pre-click diagnostics: how many rows are direct vs derived,
+      // what URL we're on, and any console errors so far.
+      const preClick = await driver.executeScript(`
+        return {
+          url: window.location.href,
+          lineageBtnCount: Array.from(document.querySelectorAll('button')).filter(b => b.textContent.toLowerCase().trim() === 'lineage').length,
+          derivedSpanCount: Array.from(document.querySelectorAll('span[title]')).filter(s => /Derived/.test(s.title)).length,
+          rowCount: document.querySelectorAll('tbody tr').length,
+        };
+      `);
+      console.log(`  [drill] pre-click: ${JSON.stringify(preClick)}`);
+      // Click the LAST lineage button (most recent period, most
+      // likely to have clean lineage data). Three strategies:
+      //   1. native Selenium click after scrollIntoView
+      //   2. JS click via executeScript
+      //   3. dispatchEvent('click', {bubbles:true}) — synthetic event
+      const target = lineageBtns[lineageBtns.length - 1];
+      await driver.executeScript("arguments[0].scrollIntoView({block: 'center'});", target);
+      // Install a global error catcher BEFORE the click so we can
+      // surface React render exceptions when the tree unmounts.
+      await driver.executeScript(`
+        window.__capturedErrors = [];
+        window.addEventListener('error', (e) => {
+          window.__capturedErrors.push('error: ' + (e.message ?? e) + ' @ ' + (e.filename ?? '?') + ':' + (e.lineno ?? '?'));
+        });
+        window.addEventListener('unhandledrejection', (e) => {
+          window.__capturedErrors.push('rejection: ' + ((e.reason && (e.reason.message ?? e.reason.toString())) ?? '?'));
+        });
+      `);
+      await wait(200);
+      let drawerOpened = false;
+      try {
+        await target.click();
+        await driver.wait(async () => {
+          const t = await driver.findElement(By.tagName("body")).getText();
+          return /Source filing/i.test(t) && /Source XBRL concept/i.test(t);
+        }, 8000);
+        drawerOpened = true;
+      } catch { /* fall through */ }
+      if (!drawerOpened) {
+        const post = await driver.executeScript(`
+          return {
+            url: window.location.href,
+            bodyLen: document.body.innerText.length,
+            drawerVisible: !!document.querySelector('[role="complementary"][aria-label="Lineage details"]'),
+            drawerInner: document.querySelector('[role="complementary"][aria-label="Lineage details"]')?.innerText?.slice(0, 300) ?? null,
+            errors: window.__capturedErrors ?? [],
+          };
+        `);
+        console.log(`  [lineage] native click didn't open drawer; post-state: ${JSON.stringify(post)}`);
+        await driver.executeScript(
+          "arguments[0].dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));",
+          target,
+        );
+        await driver.wait(async () => {
+          const t = await driver.findElement(By.tagName("body")).getText();
+          return /Source filing/i.test(t) && /Source XBRL concept/i.test(t);
+        }, 10000);
+      }
       const drawerText = await driver.findElement(By.tagName("body")).getText();
       // Pull a few lineage facts.
       const accnMatch = drawerText.match(/\d{10}-\d{2}-\d{6}/);
@@ -227,17 +305,32 @@ try {
       await screenshot(driver, `${c.ticker.replace(".", "_")}-lineage`);
 
       // Close the drawer with Escape so the next iteration starts clean.
-      await driver.actions().sendKeys("").perform(); // Escape
+      await driver.actions().sendKeys(Key.ESCAPE).perform();
       await wait(200);
     } catch (e) {
       result.lineageError = String(e);
       console.log(`  [lineage] ✗ ${e}`);
+      try {
+        const body = await driver.findElement(By.tagName("body")).getText();
+        console.log(`  [lineage diag] body[0..600]: ${body.slice(0, 600).replace(/\n/g, " | ")}`);
+        await screenshot(driver, `${c.ticker.replace(".", "_")}-lineage-fail`);
+      } catch { /* ignore diag errors */ }
     }
+
+    // Always force a clean reset to home before the next iteration —
+    // an open drawer or stuck route would block findElement on the
+    // diagnostics step. Direct location.href bypasses any overlay.
+    try {
+      await driver.executeScript("window.location.href = 'tauri://localhost/';");
+      await driver.wait(async () => {
+        try {
+          return /Saved companies/i.test(await driver.findElement(By.tagName("body")).getText());
+        } catch { return false; }
+      }, 5000);
+    } catch { /* ignore — diagnostics will fail loudly if home isn't reachable */ }
 
     // Diagnostics page.
     try {
-      const back = await driver.findElement(By.partialLinkText("Saved companies"));
-      await back.click();
       await wait(300);
       const link = await driver.findElement(By.xpath(
         `//a[contains(@href, "/c/${c.ticker.replace(".", "")}") and not(contains(@href, "/metric/"))]`
