@@ -83,6 +83,10 @@ pub async fn get_metric_history(
 ///   Missing input treated as 0; row omitted only if both inputs missing.
 /// - **GrossProfit**: when no directly-filed value exists, computed as
 ///   `Revenue - CostOfRevenue` per period. Both inputs required.
+/// - **CapitalExpenditures**: when no directly-filed value exists,
+///   computed as `ΔPropertyPlantAndEquipmentNet + DepreciationAndAmortization`
+///   per period (the canonical reconstruction used when filers — most
+///   often banks — don't report PaymentsToAcquirePropertyPlantAndEquipment).
 ///
 /// Other metrics pass through unchanged. Result is sorted by
 /// `period.start_date`.
@@ -97,6 +101,9 @@ async fn revenue_aware_series(
     }
     if matches!(metric, Metric::GrossProfit) {
         return gross_profit_series(state, cik, kind).await;
+    }
+    if matches!(metric, Metric::CapitalExpenditures) {
+        return capital_expenditures_series(state, cik, kind).await;
     }
 
     let direct = state.normalized_facts.current_series(cik, metric, kind.clone()).await?;
@@ -232,6 +239,106 @@ async fn total_debt_series(
             normalized_fact_id: -1,
         })
         .collect();
+    out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+    Ok(out)
+}
+
+/// Capital expenditures, with read-time derivation for periods where the
+/// filer didn't report `PaymentsToAcquirePropertyPlantAndEquipment`.
+///
+/// Formula:
+///   `CapEx(t) ≈ PP&E_Net(end of t) − PP&E_Net(end of prior period) + DepreciationAndAmortization(t)`
+///
+/// This is the standard reconstruction from the cash-flow / balance
+/// roll-forward identity:
+///   `PP&E_Net(end) = PP&E_Net(begin) + Additions − Depreciation − Disposals`
+/// Solving for Additions and ignoring disposals (which we cannot observe
+/// from these inputs alone) yields the formula above. For most filers
+/// the omission is small; for filers with significant asset disposals
+/// the derived value is an upper bound on capital expenditures.
+///
+/// Behavior:
+/// - Periods with a directly-filed value pass through unchanged.
+/// - Periods missing direct value are derived if all three inputs are
+///   available: PP&E_Net at the period's end_date, PP&E_Net at the most
+///   recent earlier observation, and DepreciationAndAmortization for
+///   the period.
+/// - Negative or zero derivations (which would imply more disposals than
+///   purchases — implausible for capital expenditures as a positive-only
+///   metric) are skipped per the project accuracy rule.
+async fn capital_expenditures_series(
+    state: &AppState,
+    cik: &Cik,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    use std::collections::{BTreeMap, HashSet};
+
+    // Direct values win.
+    let direct = state
+        .normalized_facts
+        .current_series(cik, Metric::CapitalExpenditures, kind.clone())
+        .await?;
+    let mut out: Vec<MetricSeriesPoint> = direct
+        .into_iter()
+        .map(|(p, n)| MetricSeriesPoint {
+            period: p,
+            value: n.value,
+            source_kind: n.source_kind.as_str().into(),
+            normalized_fact_id: n.id,
+        })
+        .collect();
+    let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
+
+    // Property, plant & equipment net is an instant. Q4 / FY observations
+    // attach to the annual period; Q1, Q2, Q3 attach to quarterly periods.
+    // To find the right "prior" balance for any period, gather every
+    // observation across both kinds and key by end_date.
+    let ppne_a = state
+        .normalized_facts
+        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Annual)
+        .await?;
+    let ppne_q = state
+        .normalized_facts
+        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Quarterly)
+        .await?;
+    let mut ppne_by_end: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
+    for (p, n) in ppne_a.iter().chain(ppne_q.iter()) {
+        ppne_by_end.insert(p.end_date, n.value);
+    }
+
+    // DepreciationAndAmortization for the requested kind. The set of
+    // periods in this series drives candidate periods for derivation —
+    // we can only derive a period that has a depreciation value and
+    // a closing PP&E observation matching its end_date.
+    let da = state
+        .normalized_facts
+        .current_series(cik, Metric::DepreciationAmortization, kind)
+        .await?;
+
+    for (period, da_n) in da {
+        if direct_periods.contains(&period.id) {
+            continue;
+        }
+        let Some(&ppne_end) = ppne_by_end.get(&period.end_date) else {
+            continue;
+        };
+        let Some((_, &ppne_start)) = ppne_by_end.range(..period.end_date).next_back() else {
+            continue;
+        };
+        let value = ppne_end
+            .saturating_sub(ppne_start)
+            .saturating_add(da_n.value);
+        // Capital expenditures is positive-only; skip implausible results.
+        if value <= 0 {
+            continue;
+        }
+        out.push(MetricSeriesPoint {
+            period,
+            value,
+            source_kind: "derived".into(),
+            normalized_fact_id: -1,
+        });
+    }
     out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
     Ok(out)
 }

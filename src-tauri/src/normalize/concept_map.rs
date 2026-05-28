@@ -96,6 +96,11 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
             // quarterly series.
             ("us-gaap", "DepreciationAmortizationAndAccretionNet"),
         ],
+        // Used internally as an input to capital-expenditures derivation
+        // when a filer doesn't report PaymentsToAcquirePropertyPlantAndEquipment.
+        Metric::PropertyPlantAndEquipmentNet => &[
+            ("us-gaap", "PropertyPlantAndEquipmentNet"),
+        ],
         // Bank-revenue inputs. Used by the `bank_revenue_v1` derivation
         // (see pipeline::orchestrator) when canonical Revenue is missing.
         //

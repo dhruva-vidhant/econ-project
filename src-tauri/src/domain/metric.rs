@@ -25,6 +25,10 @@ pub enum Metric {
     CashFromOperations,
     CapitalExpenditures,
     DepreciationAmortization,
+    // Property, plant & equipment, net (instant). Used as an input for
+    // deriving capital expenditures when a filer doesn't report
+    // PaymentsToAcquirePropertyPlantAndEquipment directly.
+    PropertyPlantAndEquipmentNet,
     // Bank-revenue inputs (used when canonical Revenue is missing for a
     // bank-style filer; see `bank_revenue_v1` derivation)
     NetInterestIncome,
@@ -58,6 +62,7 @@ impl Metric {
             Metric::CashFromOperations => "cash_from_operations",
             Metric::CapitalExpenditures => "capital_expenditures",
             Metric::DepreciationAmortization => "depreciation_amortization",
+            Metric::PropertyPlantAndEquipmentNet => "property_plant_and_equipment_net",
             Metric::NetInterestIncome => "net_interest_income",
             Metric::NoninterestIncome => "noninterest_income",
             Metric::InterestIncomeOperating => "interest_income_operating",
@@ -88,6 +93,7 @@ impl Metric {
             "cash_from_operations" => Metric::CashFromOperations,
             "capital_expenditures" => Metric::CapitalExpenditures,
             "depreciation_amortization" => Metric::DepreciationAmortization,
+            "property_plant_and_equipment_net" => Metric::PropertyPlantAndEquipmentNet,
             "net_interest_income" => Metric::NetInterestIncome,
             "noninterest_income" => Metric::NoninterestIncome,
             "interest_income_operating" => Metric::InterestIncomeOperating,
@@ -107,6 +113,7 @@ impl Metric {
         Metric::CashAndEquivalents, Metric::LongTermDebt, Metric::CurrentDebt,
         Metric::TotalDebt, Metric::TotalAssets, Metric::TotalLiabilities, Metric::TotalEquity,
         Metric::CashFromOperations, Metric::CapitalExpenditures, Metric::DepreciationAmortization,
+        Metric::PropertyPlantAndEquipmentNet,
         Metric::NetInterestIncome, Metric::NoninterestIncome,
         Metric::InterestIncomeOperating, Metric::InterestExpense,
         Metric::HistoricalMarketCap, Metric::CurrentMarketCap,
@@ -119,7 +126,8 @@ impl Metric {
             Metric::SharesOutstandingBasic | Metric::SharesOutstandingDiluted
             | Metric::CashAndEquivalents | Metric::LongTermDebt | Metric::CurrentDebt
             | Metric::TotalDebt | Metric::TotalAssets | Metric::TotalLiabilities
-            | Metric::TotalEquity | Metric::HistoricalMarketCap | Metric::CurrentMarketCap
+            | Metric::TotalEquity | Metric::PropertyPlantAndEquipmentNet
+            | Metric::HistoricalMarketCap | Metric::CurrentMarketCap
         )
     }
 }
