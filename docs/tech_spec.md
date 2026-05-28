@@ -438,17 +438,33 @@ pub fn metric_for(taxonomy: &str, concept: &str) -> Option<Metric>;
 **DoD:** Unit tests covering every Metric; tests asserting the §6.2 ordering for `total_debt`, `revenue`, etc.
 
 #### M19 — Period reconciliation
-**Developer.** Build `Period` rows from raw facts; YTD-to-quarter derivation; 53-week detection; FYE alignment.
+**Developer.** Single-quarter derivation from year-to-date inputs, with span-aware slot classification, concept-consistency selection, and period-end-derived fiscal year. The reconciler ignores the SEC `fy` tag entirely (it carries the filing's year, not the period's; see architecture §8.2) and uses `fp` only as a position hint, classifying each duration fact into a span-aware slot (`SingleQ1..Q4` ≤110 days, `YtdH1` 150–210 days, `Ytd9M` 240–290 days, `Fy` ≥340 days). Within each `(metric, fiscal_year)` it picks one source XBRL concept (highest slot coverage; catalog-priority tie-break) so derivations like `Q4 = FY − 9M` cannot mix concept scopes (e.g. `DepreciationAndAmortization` annual-only vs `DepreciationAmortizationAndAccretionNet` quarterly-with-accretion). 53-week detection is on `end_date − start_date > 364 days`.
 **Depends on:** M03, M08.
 **Public interface:**
 ```rust
-pub struct PeriodReconciler { /* ... */ }
-impl PeriodReconciler {
-    pub fn reconcile(&self, cik: &Cik, raw: &[RawFact])
-        -> Result<(Vec<Period>, Vec<DerivationRecord>), PipelineError>;
+pub fn reconcile_quarters(raw: &[RawFact], fye_mmdd: &str)
+    -> (Vec<QuarterValue>, Vec<RawFact>);
+
+pub struct QuarterValue {
+    pub metric: Metric,
+    pub cik: Cik,
+    pub fy: i32,
+    pub fq: u8,
+    pub period_start: NaiveDate,
+    pub period_end: NaiveDate,
+    pub source_fact_id: i64,
+    pub value: i64,
+    pub source_kind: SourceKind,
+    pub derived: bool,
+}
+
+// Period helpers used by the orchestrator for instant facts:
+impl Period {
+    pub fn compute_fiscal_year(end: NaiveDate, fye_mmdd: &str) -> i32;
+    pub fn compute_fiscal_quarter(end: NaiveDate, fye_mmdd: &str) -> Option<u8>;
 }
 ```
-**DoD:** Tests for: pure annual, pure quarterly, YTD-only Q3 → derive Q3, 53-week year, FYE change mid-history.
+**DoD:** Tests for: pure annual, pure quarterly, YTD-only Q3 → derive Q3, single-quarter Q2 wins over derived when both filed under the same `fp`, concept-with-more-coverage wins when two XBRL concepts share a metric, periods-segregated-by-period-end-year-not-SEC-`fy`-tag, 53-week year, FYE change mid-history.
 
 #### M20 — Unit + sign normalization
 **Developer.** Pure functions converting raw facts to canonical metric values applying §6.2 sign conventions.
@@ -522,7 +538,12 @@ pub async fn ingest_company(
 ### Derived metrics (M28)
 
 #### M28 — Derived metric registry + formulas
-**Developer.** FCF, gross profit (when not directly tagged), total debt, historical market cap, current market cap.
+**Developer.** Two persistence styles:
+
+- **Persisted at ingest, written to `derived_metric`:** `historical_market_cap_v1`, `bank_revenue_v1` (steps 3–4 of architecture §8.1, run only when no direct `Revenue` exists for the period; positivity-guarded), `fcf_v1`.
+- **Read-time only, computed in IPC handlers from `normalized_fact` rows:** `total_debt_v1`, `gross_profit_v1`, `capital_expenditures_v1` (the PP&E-roll-forward fallback `ΔPP&E_net + D&A`, used when no explicit cash-flow CapEx is tagged). Read-time avoids stale-cache hazards when an input is superseded.
+- **Live-only, never persisted:** `current_market_cap_v1`.
+
 **Depends on:** M03, M11, M17.
 **Public interface:**
 ```rust
@@ -532,8 +553,12 @@ pub trait Formula: Send + Sync {
     fn compute(&self, inputs: &MetricInputs, ctx: &FormulaCtx) -> DerivedResult;
 }
 pub fn registry() -> Vec<Box<dyn Formula>>;
+
+// Read-time merge in IPC: revenue queries union direct primary
+// revenue with bank_revenue_v1 derived rows.
+pub async fn revenue_aware_series(/* ... */) -> Result<MetricSeries, IpcError>;
 ```
-**DoD:** Per-formula unit tests with synthesized inputs; `is_complete = false` returned cleanly when any input missing.
+**DoD:** Per-formula unit tests with synthesized inputs; `is_complete = false` returned cleanly when any input missing. Bank-revenue chain: step 3 picked when both inputs present; step 4 picked when `NetInterestIncome` absent but the `(IIO, IE, NoniI)` triple is present; non-positive derived value skipped + warned.
 
 ---
 

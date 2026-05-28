@@ -389,7 +389,17 @@ Must support:
 
 ### FR-030 — Fixed Derived Metrics
 
-V1 supports predefined formulas only.
+V1 supports predefined formulas only. Required derivations include:
+
+- **Free cash flow** (see FR-032).
+- **Total debt** = `long_term_debt + current_debt`, computed at read time so each input's most-recent primary value is used.
+- **Gross profit** = `revenue − cost_of_revenue`, used when the issuer does not directly tag a gross-profit value.
+- **Capital expenditures fallback**: when no explicit cash-flow CapEx value is reported (some bank/financial filers omit it), derive from the property, plant and equipment roll-forward — `capital_expenditures = ΔPP&E_net + depreciation_and_amortization` — using the same period's PP&E delta and depreciation. Lineage records both inputs.
+- **Bank revenue fallback**: when the issuer does not directly tag `us-gaap:Revenues` (typical for bank-holding companies), derive in the following order until a complete result is available:
+  1. `NetInterestIncome + NoninterestIncome`
+  2. `(InterestIncomeOperating − InterestExpense) + NoninterestIncome`
+
+  Each derivation writes lineage naming the contributing concepts.
 
 ### FR-031 — Formula Transparency
 
@@ -779,7 +789,10 @@ System must handle:
 - Currency inconsistencies
 - Partial filings
 - Conflicting filing representations
-- Quarterly versus cumulative reporting differences
+- Quarterly versus cumulative reporting differences (single-quarter and year-to-date facts may share the same `fp` tag and are distinguishable only by the duration of the reported period)
+- SEC `companyfacts` `fy` / `fp` tags reflect the FILING's fiscal year, not the period the fact represents. A 10-K's embedded comparative data (prior two fiscal years) is tagged with the latest filing's year. The system must derive each period's fiscal year from the period-end date against the issuer's fiscal-year-end calendar rather than trusting the SEC tag, otherwise three years of data collapse into a single slot.
+- Within a single (canonical metric, fiscal year) series, a company may file the metric under multiple XBRL concepts whose scopes differ (e.g. `DepreciationAndAmortization` annual-only vs `DepreciationAmortizationAndAccretionNet` quarterly-with-accretion). Mixing concepts when deriving a single quarter from cumulative inputs (e.g. Q4 = FY − 9M) yields a wrong value. The system must select one source concept per (metric, fiscal year) and use only that concept for derivations.
+- Banks report revenue as net interest income plus non-interest income rather than via `us-gaap:Revenues`. The system must support a documented fallback chain so bank revenue is not silently zero.
 
 ---
 

@@ -334,8 +334,10 @@ The product's correctness hinges on a stable internal vocabulary. V1 ships a har
 | `total_liabilities` | Balance | Instant | XBRL | Positive |
 | `total_equity` | Balance | Instant | XBRL | Signed |
 | `cash_from_operations` | Cash flow | Period flow | XBRL | Signed |
-| `capital_expenditures` | Cash flow | Period flow | XBRL | **Stored positive** (sign-normalized) |
+| `capital_expenditures` | Cash flow | Period flow | XBRL or derived (`ΔPP&E_net + depreciation_and_amortization`) | **Stored positive** (sign-normalized) |
 | `depreciation_amortization` | Cash flow | Period flow | XBRL | Positive |
+| `property_plant_and_equipment_net` | Balance | Instant | XBRL | Positive |
+| `net_interest_income`, `noninterest_income`, `interest_income_operating`, `interest_expense` | Income | Period flow | XBRL (bank inputs) | Signed |
 | `historical_market_cap` | Market | Instant (at filing date) | Derived (`historical_price_at_filed_at × shares_outstanding_basic`) | Positive |
 | `current_market_cap` | Market | Live | Derived (`live_price × latest_shares_outstanding_basic`) | Positive |
 
@@ -344,9 +346,11 @@ Each entry records its statement, whether it is a flow (period) or stock (instan
 **`total_debt` definition.** XBRL has no single canonical "total debt" concept. V1 defines `total_debt = long_term_debt + current_debt`, where the inputs map to a primary-then-fallback chain of XBRL concepts:
 
 - `long_term_debt` ← `us-gaap:LongTermDebt`, falling back to `us-gaap:LongTermDebtNoncurrent` when the primary is absent.
-- `current_debt` ← `us-gaap:DebtCurrent`, falling back to `us-gaap:LongTermDebtCurrent`.
+- `current_debt` ← `us-gaap:DebtCurrent`, falling back to `us-gaap:LongTermDebtCurrent`, then `us-gaap:ShortTermBorrowings`.
 
-The formula and the resolved input concepts are surfaced in the lineage panel for transparency (FR-031).
+`total_debt` is **derived at read time** rather than persisted: a stale `current_debt` that has since been superseded would otherwise leave the persisted sum out of sync with its inputs. The IPC read path joins the most recent primary `long_term_debt` and `current_debt` per period and sums them on the fly. The formula and the resolved input concepts are surfaced in the lineage panel for transparency (FR-031). The same read-time strategy applies to `gross_profit` and `capital_expenditures` (when derived from the PP&E roll-forward), described in §10.
+
+**Bank revenue.** Bank-holding filers do not generally tag `us-gaap:Revenues`. Architecture §8.1 documents the resolution chain (NetInterestIncome+NoninterestIncome, then InterestIncomeOperating−InterestExpense+NoninterestIncome). The bank-revenue derivation runs once at ingest time per period that has no direct `Revenue` value, and is persisted to `derived_metric` with `formula_id = "bank_revenue_v1"`. Read-time `Revenue` queries union the direct values with the bank-revenue derivations so the dashboard widget never falls back to an empty series for a financial company.
 
 **Market-cap metrics.**
 
@@ -758,13 +762,24 @@ When multiple candidate facts could populate the same `(metric, period)`, a **re
 
 The decision, the inputs that contributed, and any rejected alternates are written to `ingestion_event` so the user can audit the resolution from the Diagnostics tab.
 
+**Bank-revenue fallback chain.** Bank-holding companies do not tag `us-gaap:Revenues`; instead they file a combination of net-interest and non-interest items. When step 3's canonical `Revenues` candidates all return nothing for a `(cik, period_id)`, the engine falls back in order:
+
+1. `us-gaap:Revenues` (handled by the canonical concept map above).
+2. `NetInterestIncome + NoninterestIncome`.
+3. `(InterestIncomeOperating − InterestExpense) + NoninterestIncome`.
+
+The fallback runs as a separate pass after the canonical normalize step (the inputs themselves go through normal normalization first), and the resulting value is persisted to `derived_metric` with `formula_id = "bank_revenue_v1"`. The IPC `revenue_aware_series` read path unions direct revenue rows with `bank_revenue_v1` derivations, so the dashboard widget shows revenue for both industrial and bank issuers without any per-company branching in the UI. A guard skips and warns when the derived value is non-positive (bank revenue is always positive — a negative/zero result indicates a cross-restatement input mismatch).
+
 ### 8.2 Period reconciliation
 
 The most error-prone area. The engine:
 
 - **Aligns fiscal periods to the company's `fiscal_year_end`.** A company with FYE 06-30 (like Microsoft) has its FY2024 covering Jul 2023 – Jun 2024. Apple's `fiscalYearEnd` in `submissions.json` is `0926` — the last Saturday of September, which can fall anywhere in the Sep 24–30 range; this is correctly handled because each `period` row carries `start_date` and `end_date` from the filing rather than synthesizing them from a fixed-month-day. Each `period` row carries the FYE in effect at the time so historic alignments are preserved if the FYE later changes.
+- **Derives `period.fiscal_year` and `period.fiscal_quarter` from the period-end date, not from the SEC `fy` / `fp` tags.** Each `companyfacts` fact carries the fiscal-year and fiscal-period of the FILING that disclosed the fact, not of the period the fact represents. A FY2025 10-K embedding three years of comparative income-statement data tags every embedded row with `fy=2025`; a Q1 filing's prior-year-end balance sheet is tagged `fp=Q1`. Trusting either tag silently mis-labels every period in the comparative window. The engine therefore computes `fiscal_year = compute_fiscal_year(end_date, fye_mmdd)` and, for instants, `fiscal_quarter = compute_fiscal_quarter(end_date, fye_mmdd)`. The SEC tags are read only as classification hints inside reconciliation (the `fp` letter tells "is this Q1 vs Q2 vs Q3 vs FY"), never as the authoritative period identifier.
 - **Distinguishes instant from duration facts.** Balance-sheet items are stored at a point in time (`is_instant = 1`); income- and cash-flow items are stored over a duration. Mismatches are diagnostic-flagged and not silently coerced.
-- **Handles YTD vs. quarterly reporting.** Many filings report Q3 as the 9-month YTD total. The engine *always* derives the single-quarter value when only YTD is reported (Q3 = 9M YTD − H1 YTD; Q2 = H1 YTD − Q1; etc.), preferring the directly reported quarter when it is available. Every derivation writes a lineage record naming the YTD inputs used.
+- **Distinguishes single-quarter from year-to-date facts that share the same `fp` tag.** SEC's companyfacts API tags both styles with the same `fp` letter — a single-quarter Q2 (`~90` days) and a YTD H1 (`~180` days) both carry `fp=Q2`. The engine classifies each duration fact into a span-aware **slot** combining position-in-year with span: `SingleQ1..Q4` (≤110 days), `YtdH1` (150–210 days), `Ytd9M` (240–290 days), `Fy` (≥340 days). Slot identity is what gets keyed during reconciliation, not the raw `fp` tag.
+- **Handles YTD vs. quarterly reporting.** Many filings report Q3 as the 9-month YTD total. The engine *always* derives the single-quarter value when only YTD is reported (Q3 = 9M YTD − H1 YTD; Q2 = H1 YTD − Q1; Q4 = FY − 9M; etc.), preferring the directly reported quarter when it is available. Every derivation writes a lineage record naming the YTD inputs used. A guard refuses to persist a derived single-quarter value that turns out negative for a positive-only metric (revenue, total assets, gross profit, …); a negative result indicates the inputs straddle a restatement and the system prefers an explicit gap to a known-wrong value.
+- **Concept-consistency rule within a (metric, fiscal year).** Several canonical metrics have multiple fallback XBRL concepts whose scopes differ — `DepreciationAndAmortization` (annual-only) versus `DepreciationAmortizationAndAccretionNet` (quarterly, includes accretion), for example. Mixing them inside Q4 = FY − 9M produces a negative because the accretion-inclusive 9M is larger than the accretion-free FY. The reconciler therefore picks ONE source concept per `(metric, fiscal_year)` and uses only that concept's facts for derivation. Selection is by slot coverage (number of distinct slots present for the concept) with ties broken by the catalog's documented priority order.
 - **Handles 52/53-week fiscal calendars** (common for retailers like Costco, Apple-pre-2008, Cisco). The engine detects 53-week years via `end_date − start_date > 364 days` and sets `period.is_53_week = 1`. Year-over-year comparisons on 53-week years are explicitly flagged in the UI rather than silently averaged with 52-week years.
 - **Handles fiscal-year-end changes.** When a filing's `period_of_report` indicates a different FYE than the company's previously recorded FYE, the engine inserts a high-severity, user-visible `ingestion_event` and creates new `period` rows under the new FYE. It does not retroactively rewrite historical periods. The UI surfaces a banner on the Company Dashboard for any company whose FYE has changed at any point in its history.
 - **Refuses to invent periods.** If a fact's period boundaries cannot be reconciled to a `period` row (e.g., a stub period after IPO, an unusual transition period after FYE change), the fact is parked in `raw_fact` but not promoted to `normalized_fact`, and a user-visible `ingestion_event` is written. Accuracy is not traded for coverage.
@@ -795,6 +810,15 @@ When a 10-K/A or 10-Q/A is ingested:
 7. Read queries default to `WHERE is_primary = 1 AND superseded_by IS NULL`. The lineage panel walks the chain forward and backward via `idx_norm_superseded_by` to show the full restatement history.
 
 **Multi-step amendments** (10-K → 10-K/A → 10-K/A2): each amendment supersedes only its immediate predecessor. The chain reads as `O → A1 → A2`; `WHERE superseded_by IS NULL` returns A2 alone; the lineage panel walks O ← A1 ← A2 on demand. Cycle protection prevents pathological inputs from corrupting the chain on either insert or update.
+
+**Insert-vs-supersession-update ordering.** The partial unique index `idx_norm_primary_current ON normalized_fact (cik, metric, period_id) WHERE is_primary = 1 AND superseded_by IS NULL` is the database-level guarantee that there is at most one "currently primary" row per metric-period. SQLite does not support deferred uniqueness checks for partial indexes — UNIQUE is enforced per statement, not per transaction. The supersession write therefore runs in this order, inside a single transaction:
+
+1. Idempotency probe: if a row already exists for `(cik, metric, period_id, source_fact_id)` (the same raw fact mapping to the same period) return its id and exit. This makes re-ingestion a no-op at this layer.
+2. Demote the previous primary: `UPDATE … SET is_primary = 0 WHERE id = prev_id`. After this step the partial index has no row for the metric-period.
+3. Insert the new primary row.
+4. Restore the previous row: `UPDATE … SET is_primary = 1, superseded_by = new_id WHERE id = prev_id`. The combination of `is_primary = 1` with `superseded_by IS NOT NULL` satisfies the partial-index predicate's negation, so the row stays out of the partial index but reads correctly via the supersession-chain walk.
+
+Doing the insert before the demote, or skipping the demote and relying on `superseded_by` alone, would fire the partial unique index. Doing the restore before the insert would lose its `superseded_by → new_id` link.
 
 ### 8.6 Conflict surfacing
 
@@ -881,8 +905,10 @@ V1's registered formulas:
 | Formula id | Output metric | Inputs | Notes |
 |---|---|---|---|
 | `fcf_v1` | (derived per period) | `net_income`, `depreciation_amortization`, `capital_expenditures` | FCF = NI + D&A − CapEx (CapEx is sign-normalized positive at storage). All inputs and the result are in USD micro-units; integer arithmetic, exact. |
-| `total_debt_v1` | `total_debt` | `long_term_debt`, `current_debt` | Sum, with the per-input fallback chain documented in §6.2. |
-| `gross_profit_v1` | `gross_profit` | `revenue`, `cost_of_revenue` | Used only when `gross_profit` is not directly tagged in `companyfacts`. |
+| `total_debt_v1` | `total_debt` | `long_term_debt`, `current_debt` | Sum, with the per-input fallback chain documented in §6.2. **Read-time** derivation (the IPC layer joins each input's most-recent primary value per period and sums on the fly), not persisted, so a superseded `current_debt` cannot leave a stale `total_debt` cached. |
+| `gross_profit_v1` | `gross_profit` | `revenue`, `cost_of_revenue` | Used only when `gross_profit` is not directly tagged in `companyfacts`. **Read-time** derivation, same rationale as `total_debt_v1`. |
+| `capital_expenditures_v1` | `capital_expenditures` | `property_plant_and_equipment_net` (this period and prior), `depreciation_amortization` | **Fallback** when no explicit cash-flow CapEx is tagged: `CapEx ≈ ΔPP&E_net + D&A`. Read-time derivation. Some bank/financial-services filers omit explicit CapEx; without this fallback the dashboard widget would render a spurious zero or gap for them. |
+| `bank_revenue_v1` | `revenue` (alternate path) | `net_interest_income`, `noninterest_income`, `interest_income_operating`, `interest_expense` | Resolution chain (§8.1): step 3 = `NetInterestIncome + NoninterestIncome`; step 4 = `(InterestIncomeOperating − InterestExpense) + NoninterestIncome`. Run at ingest time and persisted to `derived_metric`. The IPC `revenue_aware_series` reader unions this against direct `revenue` rows so bank issuers render correctly without any UI branching. A non-positive derived value is skipped + warned (bank revenue is always positive). |
 | `historical_market_cap_v1` | `historical_market_cap` | `historical_price[filed_at]`, `shares_outstanding_basic` | Computed once per filing at ingestion: `(close_micro × shares_outstanding) / 1` — both factors are in micro-units / absolute integers, the result is in USD micro-units. Persisted to `derived_metric`; offline-available. |
 | `current_market_cap_v1` | `current_market_cap` | live price, `shares_outstanding_basic` (latest) | "Latest" = `shares_outstanding_basic` from the most recent primary, non-superseded `normalized_fact`: `WHERE is_primary = 1 AND superseded_by IS NULL ORDER BY period_id DESC LIMIT 1`. When this value is more than 120 days old, the dashboard widget renders a "shares as of <date>" caveat. Computed on demand; not persisted; widget shows an explicit unavailable state when the live price source is offline. |
 
