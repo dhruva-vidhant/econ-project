@@ -190,6 +190,20 @@ async fn ingest_diversified_filers_against_real_sec() {
             &[(Metric::Revenue, ONE_BILLION),
               (Metric::NetIncome, ONE_BILLION),
               (Metric::TotalAssets, ONE_HUNDRED_BILLION)][..]),
+        // Regression guard for bank-fallback concepts: WFC files
+        // CashAndDueFromBanks (not CashAndCashEquivalentsAtCarryingValue),
+        // ShortTermBorrowings (not DebtCurrent), and pre-tax-income
+        // (not OperatingIncomeLoss). Without the bank-fallback entries
+        // in concept_map, all three of these surface as missing on the
+        // statement page.
+        ("WFC", "0000072971", "Bank — bank-fallback concept coverage",
+            &[(Metric::Revenue, ONE_BILLION * 50),
+              (Metric::NetIncome, ONE_BILLION * 5),
+              (Metric::TotalAssets, ONE_HUNDRED_BILLION * 10),
+              (Metric::CashAndEquivalents, ONE_BILLION),
+              (Metric::CurrentDebt, ONE_BILLION),
+              (Metric::OperatingIncome, ONE_BILLION * 5),
+              (Metric::LongTermDebt, ONE_BILLION * 50)][..]),
     ];
 
     let mut outcomes = Vec::new();

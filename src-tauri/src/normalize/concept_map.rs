@@ -13,6 +13,11 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
             ("us-gaap", "SalesRevenueNet"),
             ("us-gaap", "SalesRevenueGoodsNet"),
         ],
+        // CostOfRevenue / GrossProfit are not concepts banks file; their
+        // income statements have NetInterestIncome and NoninterestIncome
+        // rather than a cost-of-goods structure. Leaving the metric blank
+        // for banks is more accurate than mapping to a non-equivalent
+        // concept.
         Metric::CostOfRevenue => &[
             ("us-gaap", "CostOfRevenue"),
             ("us-gaap", "CostOfGoodsAndServicesSold"),
@@ -21,6 +26,12 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::GrossProfit => &[("us-gaap", "GrossProfit")],
         Metric::OperatingIncome => &[
             ("us-gaap", "OperatingIncomeLoss"),
+            // Bank fallback: filers that do not separate "operating" from
+            // "non-operating" report pre-tax income from continuing ops
+            // (the closest GAAP analog). Used by WFC, JPM, and other large
+            // bank holding companies.
+            ("us-gaap", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"),
+            ("us-gaap", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"),
         ],
         Metric::NetIncome => &[
             ("us-gaap", "NetIncomeLoss"),
@@ -38,6 +49,12 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::CashAndEquivalents => &[
             ("us-gaap", "CashAndCashEquivalentsAtCarryingValue"),
             ("us-gaap", "Cash"),
+            // Post-ASU 2016-18 successor used by many filers (combines
+            // cash, equivalents, and restricted cash on the cashflow side).
+            ("us-gaap", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"),
+            // Bank fallback: bank holding companies report "Cash and due
+            // from banks" rather than the generic concept above.
+            ("us-gaap", "CashAndDueFromBanks"),
         ],
         Metric::LongTermDebt => &[
             ("us-gaap", "LongTermDebt"),
@@ -46,8 +63,12 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::CurrentDebt => &[
             ("us-gaap", "DebtCurrent"),
             ("us-gaap", "LongTermDebtCurrent"),
+            // Bank fallback: short-term wholesale funding (commercial
+            // paper, fed-funds purchased, repo agreements) is the bank
+            // analog to "current debt" for non-bank issuers.
+            ("us-gaap", "ShortTermBorrowings"),
         ],
-        Metric::TotalDebt => &[], // derived from LongTermDebt + CurrentDebt
+        Metric::TotalDebt => &[], // derived at read time from LongTermDebt + CurrentDebt
         Metric::TotalAssets => &[("us-gaap", "Assets")],
         Metric::TotalLiabilities => &[("us-gaap", "Liabilities")],
         Metric::TotalEquity => &[
@@ -68,9 +89,14 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         ],
         // Bank-revenue inputs. Used by the `bank_revenue_v1` derivation
         // (see pipeline::orchestrator) when canonical Revenue is missing.
+        //
+        // Important: do NOT add `InterestIncomeExpenseAfterProvisionForLoanLoss`
+        // here. That concept is gross NII *minus* the provision for loan
+        // losses — a different (smaller) metric. Counting it as NII
+        // under-reports bank revenue by the provision amount, which
+        // surfaces as a multi-billion-dollar gap in pre-2015 WFC data.
         Metric::NetInterestIncome => &[
             ("us-gaap", "InterestIncomeExpenseNet"),
-            ("us-gaap", "InterestIncomeExpenseAfterProvisionForLoanLoss"),
         ],
         Metric::NoninterestIncome => &[
             ("us-gaap", "NoninterestIncome"),
@@ -121,5 +147,27 @@ mod tests {
     #[test]
     fn total_debt_has_no_direct_candidates_it_is_derived() {
         assert!(concepts_for(Metric::TotalDebt).is_empty());
+    }
+
+    #[test]
+    fn bank_specific_concepts_route_to_canonical_metrics() {
+        // Bank-style cash, short-term funding, and pre-tax income concepts
+        // resolve to the right canonical metrics. Regression guard for
+        // WFC-style filers that don't use the non-bank GAAP defaults.
+        assert_eq!(
+            metric_for("us-gaap", "CashAndDueFromBanks"),
+            Some(Metric::CashAndEquivalents)
+        );
+        assert_eq!(
+            metric_for("us-gaap", "ShortTermBorrowings"),
+            Some(Metric::CurrentDebt)
+        );
+        assert_eq!(
+            metric_for(
+                "us-gaap",
+                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"
+            ),
+            Some(Metric::OperatingIncome)
+        );
     }
 }
