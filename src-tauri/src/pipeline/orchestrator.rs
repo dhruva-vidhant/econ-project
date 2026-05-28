@@ -125,8 +125,22 @@ pub async fn ingest_company(
     }
 
     // ─── Normalize ───────────────────────────────────────────────────────
+    // The SEC companyfacts JSON tags every fact with `fy` / `fp` —
+    // BUT those reflect the FILING's fiscal year, not the period the
+    // fact actually represents. A 10-K for FY2025 typically embeds
+    // 3 years of comparative data (e.g., 2023 + 2024 + 2025 numbers
+    // tagged `fy:2025, fp:FY`), so trusting the SEC tag for our
+    // Period.fiscal_year would systematically mis-label every period
+    // by however many years the issuer's most recent 10-K spans.
+    //
+    // Source of truth: the period's own `end_date`, projected through
+    // the issuer's fiscal-year-end calendar. See
+    // Period::compute_fiscal_year.
+    let fye = subs.fiscal_year_end.as_str();
+    let derive_fy = |end: NaiveDate| Period::compute_fiscal_year(end, fye);
+
     // (1) Quarterly facts via period reconciler.
-    let (quarter_values, _fy_facts_from_quarters) = reconcile_quarters(&all_raw);
+    let (quarter_values, _fy_facts_from_quarters) = reconcile_quarters(&all_raw, fye);
     let mut normalized_count = 0usize;
 
     for q in quarter_values {
@@ -141,10 +155,11 @@ pub async fn ingest_company(
                 &mut events).await?;
             continue;
         }
+        let derived_fy = derive_fy(q.period_end);
         let period = Period {
             id: 0,
             cik: cik.clone(),
-            fiscal_year: q.fy,
+            fiscal_year: derived_fy,
             fiscal_quarter: q.fq,
             fiscal_year_end: subs.fiscal_year_end.clone(),
             start_date: q.period_start,
@@ -168,16 +183,18 @@ pub async fn ingest_company(
             if q.derived {
                 record_event(deps, &cik, None, "normalize", Severity::Info, false,
                     format!("Derived single-quarter {} for FY{} Q{} from YTD difference.",
-                        q.metric.as_str(), q.fy, q.fq),
+                        q.metric.as_str(), derived_fy, q.fq),
                     &mut events).await?;
             }
         }
     }
 
     // (2) Annual + instant facts: pick the most-recently-filed per
-    // (metric, fy) — which approximates §8.1 amendment-priority. For
-    // amendments, this also writes the supersession chain because
-    // insert_primary_with_supersession updates the previous primary.
+    // (metric, derived_fy) — approximates §8.1 amendment-priority and
+    // also collapses duplicate facts for the same calendar year that
+    // appear under different SEC `fy` tags (the comparative-data case
+    // described above). For amendments, insert_primary_with_supersession
+    // updates the previous primary so the chain is preserved.
     type AnnualKey = (Metric, i32);
     let mut best_annual: HashMap<AnnualKey, &RawFact> = HashMap::new();
     type InstantKey = (Metric, i32, u8);
@@ -188,17 +205,18 @@ pub async fn ingest_company(
             Some(m) => m,
             None => continue,
         };
-        let fy = match f.fy { Some(x) => x, None => continue };
-        let fp = match &f.fp { Some(s) => s.as_str(), None => continue };
+        let derived_fy = derive_fy(f.period_end);
         if metric.is_instant() {
-            let fq = match fp {
-                "FY" | "Q4" => 0u8, // attach to year-end period
-                "Q1" => 1,
-                "Q2" => 2,
-                "Q3" => 3,
-                _ => continue,
+            // For instants we ignore both `fy` and `fp` — the SEC tags
+            // both follow the filing's fiscal year, so a 2019-Q1 filing
+            // emits a 2018-12-31 opening balance tagged `fp=Q1, fy=2019`,
+            // which would land in our Q1-2018 bucket if we trusted it.
+            // Period::compute_fiscal_quarter aligns on period_end month
+            // against the issuer's fiscal calendar.
+            let Some(fq) = Period::compute_fiscal_quarter(f.period_end, fye) else {
+                continue;
             };
-            let key = (metric, fy, fq);
+            let key = (metric, derived_fy, fq);
             let take = match best_instant.get(&key) {
                 Some(prev) => f.filed > prev.filed,
                 None => true,
@@ -206,8 +224,18 @@ pub async fn ingest_company(
             if take { best_instant.insert(key, f); }
             continue;
         }
-        if fp != "FY" { continue; }
-        let key = (metric, fy);
+        // Duration facts: only the FY (annual) row goes through this
+        // path; quarterly durations were handled by reconcile_quarters.
+        // Use period span (~365 days, ending on the issuer's FYE) rather
+        // than the SEC `fp` tag, which carries the filing's year and
+        // would let an embedded comparative 10-K row sneak through.
+        let Some(start) = f.period_start else { continue };
+        let span_days = (f.period_end - start).num_days();
+        let is_full_year = span_days >= 340 && span_days <= 380;
+        let ends_on_fye =
+            Period::compute_fiscal_quarter(f.period_end, fye) == Some(0);
+        if !(is_full_year && ends_on_fye) { continue; }
+        let key = (metric, derived_fy);
         let take = match best_annual.get(&key) {
             Some(prev) => f.filed > prev.filed,
             None => true,
@@ -216,11 +244,11 @@ pub async fn ingest_company(
     }
 
     // Persist annual rows.
-    for ((metric, fy), f) in best_annual {
+    for ((metric, derived_fy), f) in best_annual {
         let start = f.period_start.unwrap_or(f.period_end);
         let period = Period {
             id: 0, cik: cik.clone(),
-            fiscal_year: fy, fiscal_quarter: 0,
+            fiscal_year: derived_fy, fiscal_quarter: 0,
             fiscal_year_end: subs.fiscal_year_end.clone(),
             start_date: start, end_date: f.period_end,
             kind: PeriodKind::Annual,
@@ -244,14 +272,14 @@ pub async fn ingest_company(
 
     // Persist instant rows. Try to attach to an existing period; create a
     // new annual stub if none.
-    for ((metric, fy, fq), f) in best_instant {
-        let pid = match deps.periods.get_id(&cik, fy, fq).await? {
+    for ((metric, derived_fy, fq), f) in best_instant {
+        let pid = match deps.periods.get_id(&cik, derived_fy, fq).await? {
             Some(id) => id,
             None => {
-                // Create an annual placeholder period anchored at the instant date.
+                // Create a placeholder period anchored at the instant date.
                 let p = Period {
                     id: 0, cik: cik.clone(),
-                    fiscal_year: fy, fiscal_quarter: fq,
+                    fiscal_year: derived_fy, fiscal_quarter: fq,
                     fiscal_year_end: subs.fiscal_year_end.clone(),
                     start_date: f.period_end, end_date: f.period_end,
                     kind: if fq == 0 { PeriodKind::Annual } else { PeriodKind::Quarterly },
