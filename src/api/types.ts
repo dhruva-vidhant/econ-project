@@ -5,7 +5,10 @@ export type Ticker = string;
 export type AccessionNo = string;
 export type Micro = number; // i64 fits in JS number for values up to 2^53; we store ×1e6 — safe for >$9 trillion.
 
-export type FormType = "10-K" | "10-Q" | "10-K/A" | "10-Q/A" | "8-K" | "other";
+// Mirror of Rust FormType (filing.rs). The wire format is always a flat
+// string; non-canonical SEC form types (e.g., "POS AM") flow through as
+// the literal SEC string rather than a tagged object.
+export type FormType = "10-K" | "10-Q" | "10-K/A" | "10-Q/A" | "8-K" | string;
 
 export interface Company {
   cik: Cik;
