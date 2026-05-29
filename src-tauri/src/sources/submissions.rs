@@ -5,26 +5,68 @@
 //! `filings.recent` with parallel arrays of accession numbers, form types,
 //! filing dates, and items (the field we use to detect Item 4.02).
 
-use chrono::NaiveDate;
-use serde::Deserialize;
+use chrono::{Datelike, NaiveDate};
+use serde::{Deserialize, Deserializer};
 
 use crate::domain::{AccessionNo, Cik, Filing, FormType};
 use crate::errors::SourceError;
 
 use super::sec_client::SecClient;
 
+/// Accept either a JSON string or null/missing as an empty string.
+/// Foreign private issuers (e.g., BABA, NVO) get `entityName: null` and
+/// `fiscalYearEnd: null` from `data.sec.gov/submissions/`, which the
+/// previous `String + #[serde(default)]` declaration could not parse —
+/// `default` only fills in *absent* fields, not present-and-null ones.
+fn null_or_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SubmissionsRoot {
     pub cik: String,
-    #[serde(rename = "entityName", default)]
+    #[serde(rename = "entityName", default, deserialize_with = "null_or_string")]
     pub entity_name: String,
     #[serde(default)]
     pub tickers: Vec<String>,
     #[serde(default)]
     pub exchanges: Vec<String>,
-    #[serde(rename = "fiscalYearEnd", default)]
+    #[serde(rename = "fiscalYearEnd", default, deserialize_with = "null_or_string")]
     pub fiscal_year_end: String,
     pub filings: SubmissionsFilings,
+}
+
+impl SubmissionsRoot {
+    /// Returns a usable fiscal-year-end string ("MMDD"). When the SEC
+    /// `fiscalYearEnd` field is missing or null (typical for foreign
+    /// private issuers), derives MMDD from the most recent annual
+    /// filing's `reportDate`. Falls back to the calendar-year default
+    /// "1231" only if no annual filing carries a parseable report date.
+    pub fn resolved_fiscal_year_end(&self) -> String {
+        if !self.fiscal_year_end.is_empty() {
+            return self.fiscal_year_end.clone();
+        }
+        let r = &self.filings.recent;
+        let n = r.accession_number.len();
+        let mut best: Option<(NaiveDate, String)> = None;
+        for i in 0..n {
+            let form = FormType::from_str(r.form.get(i).map(String::as_str).unwrap_or(""));
+            if !form.is_annual() { continue; }
+            let report = match r.report_date.get(i) {
+                Some(s) if !s.is_empty() => match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+            let mmdd = format!("{:02}{:02}", report.month(), report.day());
+            match &best {
+                Some((d, _)) if *d >= report => {}
+                _ => best = Some((report, mmdd)),
+            }
+        }
+        best.map(|(_, mmdd)| mmdd).unwrap_or_else(|| "1231".to_string())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +170,88 @@ mod tests {
     }
 
     #[test]
+    fn parses_null_entity_name_and_fiscal_year_end() {
+        // Foreign private issuers (BABA, NVO, etc.) get JSON nulls for
+        // these fields. Pre-fix this would fail with "invalid type: null,
+        // expected a string".
+        let json = r#"{
+            "cik": "0001577552",
+            "entityName": null,
+            "tickers": ["BABA"],
+            "exchanges": ["NYSE"],
+            "fiscalYearEnd": null,
+            "filings": { "recent": {
+                "accessionNumber": [], "filingDate": [], "reportDate": [],
+                "form": [], "items": [], "isXBRL": []
+            }}
+        }"#;
+        let root: SubmissionsRoot = serde_json::from_str(json).unwrap();
+        assert_eq!(root.entity_name, "");
+        assert_eq!(root.fiscal_year_end, "");
+    }
+
+    #[test]
+    fn fye_falls_back_to_latest_annual_report_date() {
+        // When fiscalYearEnd is empty, derive MMDD from the latest annual
+        // filing's reportDate. BABA's most-recent 20-F reports on March 31.
+        let root = SubmissionsRoot {
+            cik: "0001577552".into(),
+            entity_name: "".into(),
+            tickers: vec!["BABA".into()],
+            exchanges: vec!["NYSE".into()],
+            fiscal_year_end: "".into(),
+            filings: SubmissionsFilings {
+                recent: SubmissionsRecent {
+                    accession_number: vec!["a".into(), "b".into(), "c".into()],
+                    filing_date: vec!["2026-05-28".into(), "2025-07-29".into(), "2024-07-30".into()],
+                    report_date: vec!["".into(), "2025-03-31".into(), "2024-03-31".into()],
+                    form: vec!["6-K".into(), "20-F".into(), "20-F".into()],
+                    items: vec!["".into(); 3],
+                    is_xbrl: vec![0, 1, 1],
+                },
+            },
+        };
+        assert_eq!(root.resolved_fiscal_year_end(), "0331");
+    }
+
+    #[test]
+    fn fye_falls_back_to_calendar_year_when_no_annual_report() {
+        let root = SubmissionsRoot {
+            cik: "x".into(), entity_name: "x".into(),
+            tickers: vec![], exchanges: vec![],
+            fiscal_year_end: "".into(),
+            filings: SubmissionsFilings {
+                recent: SubmissionsRecent {
+                    accession_number: vec!["a".into()],
+                    filing_date: vec!["2024-05-01".into()],
+                    report_date: vec!["".into()],
+                    form: vec!["6-K".into()],
+                    items: vec!["".into()],
+                    is_xbrl: vec![0],
+                },
+            },
+        };
+        assert_eq!(root.resolved_fiscal_year_end(), "1231");
+    }
+
+    #[test]
+    fn fye_passes_through_when_present() {
+        let root = SubmissionsRoot {
+            cik: "x".into(), entity_name: "x".into(),
+            tickers: vec![], exchanges: vec![],
+            fiscal_year_end: "0926".into(),
+            filings: SubmissionsFilings {
+                recent: SubmissionsRecent {
+                    accession_number: vec![], filing_date: vec![],
+                    report_date: vec![], form: vec![], items: vec![],
+                    is_xbrl: vec![],
+                },
+            },
+        };
+        assert_eq!(root.resolved_fiscal_year_end(), "0926");
+    }
+
+    #[test]
     fn maps_form_types_correctly() {
         let root = SubmissionsRoot {
             cik: "x".into(), entity_name: "x".into(), tickers: vec![], exchanges: vec![],
@@ -148,5 +272,30 @@ mod tests {
         assert!(f[1].is_amendment);
         assert_eq!(f[1].form_type, FormType::TenQA);
         assert_eq!(f[2].form_type, FormType::EightK);
+    }
+
+    #[test]
+    fn maps_foreign_issuer_form_types() {
+        let root = SubmissionsRoot {
+            cik: "x".into(), entity_name: "x".into(),
+            tickers: vec![], exchanges: vec![],
+            fiscal_year_end: "0331".into(),
+            filings: SubmissionsFilings {
+                recent: SubmissionsRecent {
+                    accession_number: vec!["a".into(), "b".into()],
+                    filing_date: vec!["2025-07-29".into(), "2025-09-01".into()],
+                    report_date: vec!["2025-03-31".into(), "2025-03-31".into()],
+                    form: vec!["20-F".into(), "20-F/A".into()],
+                    items: vec!["".into(); 2],
+                    is_xbrl: vec![1, 1],
+                },
+            },
+        };
+        let f = to_filings(&Cik("0001577552".into()), &root);
+        assert_eq!(f[0].form_type, FormType::TwentyF);
+        assert_eq!(f[1].form_type, FormType::TwentyFA);
+        assert!(f[1].is_amendment);
+        assert!(f[0].form_type.is_annual());
+        assert!(f[1].form_type.is_annual());
     }
 }

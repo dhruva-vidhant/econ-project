@@ -196,6 +196,16 @@ async fn ingest_diversified_filers_against_real_sec() {
         // (not OperatingIncomeLoss). Without the bank-fallback entries
         // in concept_map, all three of these surface as missing on the
         // statement page.
+        // Foreign private issuer: BABA files 20-F (annual) and 6-K
+        // (interim) instead of 10-K/10-Q. SEC submissions returns
+        // entityName=null and fiscalYearEnd=null. FYE must be derived
+        // from the latest 20-F's reportDate (BABA's = March 31 → "0331").
+        // Pre-fix this filer failed at the deserialization step with
+        // "error decoding response body".
+        ("BABA", "0001577552", "Foreign private issuer — 20-F filer with null fiscalYearEnd",
+            &[(Metric::Revenue, ONE_HUNDRED_BILLION),
+              (Metric::NetIncome, ONE_BILLION),
+              (Metric::TotalAssets, ONE_HUNDRED_BILLION)][..]),
         ("WFC", "0000072971", "Bank — bank-fallback concept coverage",
             &[(Metric::Revenue, ONE_BILLION * 50),
               (Metric::NetIncome, ONE_BILLION * 5),

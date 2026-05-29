@@ -10,6 +10,10 @@ pub enum FormType {
     TenKA,
     TenQA,
     EightK,
+    /// Foreign private issuer annual report (e.g., BABA, NVO). Span and
+    /// FYE behave like 10-K once the issuer's fiscal-year-end is known.
+    TwentyF,
+    TwentyFA,
     /// Catch-all for forms outside the canonical V1 set (e.g., "POS AM",
     /// "SD"). Carries the SEC's literal form-type string.
     Other(String),
@@ -40,6 +44,8 @@ impl FormType {
             "10-K/A" => FormType::TenKA,
             "10-Q/A" => FormType::TenQA,
             "8-K" => FormType::EightK,
+            "20-F" => FormType::TwentyF,
+            "20-F/A" => FormType::TwentyFA,
             other => FormType::Other(other.to_string()),
         }
     }
@@ -50,11 +56,24 @@ impl FormType {
             FormType::TenKA => "10-K/A",
             FormType::TenQA => "10-Q/A",
             FormType::EightK => "8-K",
+            FormType::TwentyF => "20-F",
+            FormType::TwentyFA => "20-F/A",
             FormType::Other(s) => s.as_str(),
         }
     }
     pub fn is_amendment(&self) -> bool {
-        matches!(self, FormType::TenKA | FormType::TenQA)
+        matches!(self, FormType::TenKA | FormType::TenQA | FormType::TwentyFA)
+    }
+
+    /// True for forms that report a full fiscal year (10-K, 20-F, and
+    /// their amendments). Used by FYE-derivation fallback when the SEC
+    /// submissions endpoint omits `fiscalYearEnd` (typical for foreign
+    /// private issuers).
+    pub fn is_annual(&self) -> bool {
+        matches!(
+            self,
+            FormType::TenK | FormType::TenKA | FormType::TwentyF | FormType::TwentyFA
+        )
     }
 }
 

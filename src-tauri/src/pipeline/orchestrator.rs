@@ -58,6 +58,11 @@ pub async fn ingest_company(
 
     let subs = submissions::fetch_submissions(&deps.sec, &cik).await?;
     let filings = submissions::to_filings(&cik, &subs);
+    // Foreign private issuers (e.g., BABA, NVO) get `fiscalYearEnd: null`
+    // from `data.sec.gov/submissions/`. Derive it from the most recent
+    // annual filing's `reportDate` so period reconciliation works for
+    // any issuer.
+    let resolved_fye = subs.resolved_fiscal_year_end();
 
     // Wire `amends` field: an amendment's accession_no is structurally
     // related to the original by SEC convention but we can't infer it
@@ -71,7 +76,7 @@ pub async fn ingest_company(
         name: name.clone(),
         exchange: subs.exchanges.first().cloned(),
         sic: None,
-        fiscal_year_end: Some(subs.fiscal_year_end.clone()),
+        fiscal_year_end: Some(resolved_fye.clone()),
         added_at: now,
         last_refreshed: Some(now),
     };
@@ -136,7 +141,7 @@ pub async fn ingest_company(
     // Source of truth: the period's own `end_date`, projected through
     // the issuer's fiscal-year-end calendar. See
     // Period::compute_fiscal_year.
-    let fye = subs.fiscal_year_end.as_str();
+    let fye = resolved_fye.as_str();
     let derive_fy = |end: NaiveDate| Period::compute_fiscal_year(end, fye);
 
     // (1) Quarterly facts via period reconciler.
@@ -161,7 +166,7 @@ pub async fn ingest_company(
             cik: cik.clone(),
             fiscal_year: derived_fy,
             fiscal_quarter: q.fq,
-            fiscal_year_end: subs.fiscal_year_end.clone(),
+            fiscal_year_end: resolved_fye.clone(),
             start_date: q.period_start,
             end_date: q.period_end,
             kind: PeriodKind::Quarterly,
@@ -249,7 +254,7 @@ pub async fn ingest_company(
         let period = Period {
             id: 0, cik: cik.clone(),
             fiscal_year: derived_fy, fiscal_quarter: 0,
-            fiscal_year_end: subs.fiscal_year_end.clone(),
+            fiscal_year_end: resolved_fye.clone(),
             start_date: start, end_date: f.period_end,
             kind: PeriodKind::Annual,
             is_53_week: Period::detect_53_week(start, f.period_end),
@@ -280,7 +285,7 @@ pub async fn ingest_company(
                 let p = Period {
                     id: 0, cik: cik.clone(),
                     fiscal_year: derived_fy, fiscal_quarter: fq,
-                    fiscal_year_end: subs.fiscal_year_end.clone(),
+                    fiscal_year_end: resolved_fye.clone(),
                     start_date: f.period_end, end_date: f.period_end,
                     kind: if fq == 0 { PeriodKind::Annual } else { PeriodKind::Quarterly },
                     is_53_week: false,
