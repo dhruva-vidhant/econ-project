@@ -20,6 +20,7 @@ The transfer bundle (`econ-demo-bundle/`) contains:
 | File | Purpose |
 |---|---|
 | `EconProject_0.1.0_aarch64.dmg` | Ad-hoc signed macOS installer (no Apple Developer ID). Open, drag to Applications. |
+| `fix-quarantine.sh` | One-shot script to strip macOS quarantine after transfer (REQUIRED — see §2.2). |
 | `econ-project-source-<commit>.tar.gz` | Full source tarball at the demo commit, for inspection or rebuild. |
 | `prd.pdf` | Product Requirements Document. |
 | `architecture.pdf` | Architecture document. |
@@ -38,7 +39,18 @@ The transfer bundle (`econ-demo-bundle/`) contains:
 
 ### 2.2 Strip the macOS quarantine attribute (REQUIRED)
 
-The bundle is ad-hoc signed (linker-signed by the Rust toolchain, no Apple Developer ID) and **not** notarized by Apple, so macOS Gatekeeper will block first launch with "Apple cannot verify…". Clear the quarantine bit before launching:
+The bundle is ad-hoc signed (linker-signed by the Rust toolchain, no Apple Developer ID) and **not** notarized by Apple. When you transfer the `.dmg` to the target Mac (AirDrop, USB, web download, email), macOS attaches a `com.apple.quarantine` attribute. Combined with the ad-hoc signature this triggers one of two Gatekeeper errors on first launch:
+
+- "Apple cannot verify that this app is free of malware"
+- **"EconProject.app has been modified or damaged. Move it to the Trash."**
+
+Both are resolved the same way — strip the quarantine attribute. The simplest path is the bundled script (run it from the same folder where you copied `fix-quarantine.sh`):
+
+```bash
+bash ~/Desktop/econ-demo-bundle/fix-quarantine.sh
+```
+
+Or run the underlying command directly:
 
 ```bash
 xattr -cr /Applications/EconProject.app
@@ -46,7 +58,9 @@ xattr -cr /Applications/EconProject.app
 
 After this, double-click the `.app` to launch normally. No further unblock prompts.
 
-**Recovery path if you skip the `xattr` step:** Right-click `EconProject.app` → **Open** → click **Open** in the warning dialog. macOS may also surface this as **System Settings → Privacy & Security → "EconProject was blocked…" → Open Anyway**. After the first manual override, the app launches normally on subsequent runs.
+**If you already saw the "modified or damaged" dialog**: dismiss it (do *not* click Move to Trash), run the command above, then re-launch. The app will start cleanly.
+
+**If macOS will not let you run `xattr` either** (rare, only on locked-down corporate Macs): Right-click `EconProject.app` → **Open** → click **Open** in the warning dialog. If that also fails, open **System Settings → Privacy & Security → "EconProject was blocked…" → Open Anyway**.
 
 ### 2.3 First launch
 
@@ -122,7 +136,7 @@ Foreign private issuers (20-F filers): BABA (Alibaba, March year-end), and simil
 
 | Symptom | Action |
 |---|---|
-| Gatekeeper blocks first launch | Run `xattr -cr /Applications/EconProject.app` in Terminal, relaunch. Or right-click → Open → Open. |
+| "Apple cannot verify…" or "modified or damaged" on first launch | Run `bash ~/Desktop/econ-demo-bundle/fix-quarantine.sh` (or `xattr -cr /Applications/EconProject.app`), then relaunch. |
 | SEC rate-limit (HTTP 429) during ingestion | Wait 60 seconds, then click **Refresh** or remove + re-add the ticker. EDGAR rate-limits at 10 req/s. |
 | Network failure mid-ingestion | Ticker remains in saved list with partial data. Click Refresh once network returns; ingestion resumes. |
 | Current market cap widget blank | Expected when offline or when Yahoo is unreachable. Demo continues; FR-050 only requires *historical* market cap offline. |
