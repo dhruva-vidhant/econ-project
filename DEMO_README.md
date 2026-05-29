@@ -102,12 +102,19 @@ Return to AAPL. Click the **Refresh** button. The system checks SEC for newer fi
 
 ## 4. Known limitations (avoid clicking these during demo)
 
-- **Share-class tickers with `.` (e.g. `BRK.B`)**: ticker resolver does not handle the dot. Use a different ticker.
 - **Current market cap**: requires live Yahoo Finance access. Goes blank when offline; historical market cap (computed at ingestion) remains available offline. This is per FR-050.
 - **8-K Item 4.02 unreliability warnings**: implemented but rarely triggered on common large-cap demo tickers — don't promise to demonstrate the warning live.
 - **Multi-company comparison / peer benchmarking**: explicitly out of V1 scope (PRD §2.2).
 - **CSV / PDF export**: out of V1 scope.
 - **Test heuristic warning** in some lineage outputs: filing accession numbers carry the *filer's* CIK (often a filing agent), not the issuer's. Lineage data is correct; an internal test heuristic comments on this but it is not user-visible.
+
+### Tickers known to work end-to-end
+
+US issuers (10-K filers): AAPL, MSFT, GOOGL, AMZN, META, NVDA, TSLA, JPM, WMT, COST, WFC, CRM, V, MA, UNH, HD, PG, XOM, LLY, AVGO, KO, PEP, ORCL, ADBE, NFLX, DIS, INTC, AMD, ABBV, CVX. Bank filers (JPM, WFC) exercise the bank-revenue derivation chain.
+
+Share-class tickers: BRK.B / BRK-B (Berkshire Hathaway B), BF.A / BF-A (Brown-Forman A) — both separator forms resolve.
+
+Foreign private issuers (20-F filers): BABA (Alibaba, March year-end), and similar non-US issuers. Fiscal year end is derived from the latest annual filing when SEC's submissions endpoint omits it.
 
 ---
 
