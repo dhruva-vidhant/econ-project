@@ -105,7 +105,27 @@ impl TickerMap {
     }
 
     pub fn lookup(&self, ticker: &Ticker) -> Option<(Cik, String)> {
-        self.by_ticker.get(ticker).cloned()
+        if let Some(v) = self.by_ticker.get(ticker) {
+            return Some(v.clone());
+        }
+        // SEC publishes share-class tickers with a hyphen (`BRK-B`, `BF-A`).
+        // Users typing the same symbol from a brokerage or finance site often
+        // use a dot (`BRK.B`). Try the .↔- variant before giving up. No
+        // hardcoded ticker list — just a literal character swap on the input.
+        let s = &ticker.0;
+        let alt = if s.contains('.') {
+            Some(s.replace('.', "-"))
+        } else if s.contains('-') {
+            Some(s.replace('-', "."))
+        } else {
+            None
+        };
+        if let Some(a) = alt {
+            if let Some(v) = self.by_ticker.get(&Ticker(a)) {
+                return Some(v.clone());
+            }
+        }
+        None
     }
 
     pub fn len(&self) -> usize { self.by_ticker.len() }
@@ -116,6 +136,34 @@ impl TickerMap {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn lookup_resolves_dot_to_hyphen_share_class() {
+        // SEC stores BRK-B with a hyphen. A user typing BRK.B should still
+        // resolve to the same company.
+        let mut m = HashMap::new();
+        m.insert(
+            Ticker::from_str("BRK-B"),
+            (Cik("0001067983".into()), "Berkshire Hathaway".into()),
+        );
+        let map = TickerMap { by_ticker: m };
+        assert!(map.lookup(&Ticker::from_str("BRK-B")).is_some(), "exact match");
+        assert!(map.lookup(&Ticker::from_str("BRK.B")).is_some(), "dot→hyphen variant");
+        assert!(map.lookup(&Ticker::from_str("BRKB")).is_none(), "no-separator stays unresolved");
+    }
+
+    #[test]
+    fn lookup_resolves_hyphen_to_dot_share_class() {
+        // Defensive inverse: if a ticker map were keyed under a dot form,
+        // a hyphen lookup should still succeed.
+        let mut m = HashMap::new();
+        m.insert(
+            Ticker::from_str("BF.A"),
+            (Cik("0000014693".into()), "Brown Forman".into()),
+        );
+        let map = TickerMap { by_ticker: m };
+        assert!(map.lookup(&Ticker::from_str("BF-A")).is_some(), "hyphen→dot variant");
+    }
 
     #[test]
     fn parses_company_tickers_shape() {
