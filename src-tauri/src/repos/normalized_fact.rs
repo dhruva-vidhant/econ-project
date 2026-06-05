@@ -175,7 +175,7 @@ impl NormalizedFactRepo for SqliteNormalizedFactRepo {
              JOIN period p ON p.id = n.period_id
              WHERE n.cik = ?1 AND n.metric = ?2 AND p.kind = ?3
                AND n.is_primary = 1 AND n.superseded_by IS NULL
-             ORDER BY p.start_date".to_string();
+             ORDER BY p.end_date".to_string();
         let mut stmt = g.conn().prepare(&q)?;
         let rows = stmt.query_map(
             rusqlite::params![cik.0, metric.as_str(), kind.as_str()],

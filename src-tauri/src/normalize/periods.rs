@@ -209,16 +209,20 @@ pub fn reconcile_quarters(
         if let Some(f) = q3_single {
             push_single(&mut out, metric, f, 3);
         } else if let Some(nm) = nine_m {
+            // Q3 = 9M − H1, spanning (H1_end, 9M_end]. Capture the H1 close
+            // date alongside the value so the derived quarter starts the day
+            // after H1, not at the fiscal-year start the 9M fact carries.
             let h1_value = match (h1, q1, q2_single) {
-                (Some(h1f), _, _) => Some(h1f.value_numeric),
-                (None, Some(q1f), Some(q2f)) => {
-                    Some(q1f.value_numeric.saturating_add(q2f.value_numeric))
-                }
+                (Some(h1f), _, _) => Some((h1f.value_numeric, h1f.period_end)),
+                (None, Some(q1f), Some(q2f)) => Some((
+                    q1f.value_numeric.saturating_add(q2f.value_numeric),
+                    q2f.period_end,
+                )),
                 _ => None,
             };
-            if let Some(h1v) = h1_value {
+            if let Some((h1v, h1_end)) = h1_value {
                 let value = nm.value_numeric.saturating_sub(h1v);
-                push_derived_single_input(&mut out, metric, nm, 3, value);
+                push_derived_single_input(&mut out, metric, nm, 3, value, next_day(h1_end));
             }
         }
 
@@ -226,21 +230,26 @@ pub fn reconcile_quarters(
         if let Some(f) = q4_single {
             push_single(&mut out, metric, f, 4);
         } else if let Some(fy_f) = fy_fact {
+            // Q4 = FY − 9M, spanning (9M_end, FY_end]. Capture the 9M close
+            // date so the derived quarter starts the day after the first
+            // three quarters, not at the fiscal-year start the FY fact carries.
             let nine_m_value = match (nine_m, q3_single, h1, q1, q2_single) {
-                (Some(nm), _, _, _, _) => Some(nm.value_numeric),
-                (None, Some(q3f), Some(h1f), _, _) => {
-                    Some(h1f.value_numeric.saturating_add(q3f.value_numeric))
-                }
-                (None, Some(q3f), None, Some(q1f), Some(q2f)) => Some(
+                (Some(nm), _, _, _, _) => Some((nm.value_numeric, nm.period_end)),
+                (None, Some(q3f), Some(h1f), _, _) => Some((
+                    h1f.value_numeric.saturating_add(q3f.value_numeric),
+                    q3f.period_end,
+                )),
+                (None, Some(q3f), None, Some(q1f), Some(q2f)) => Some((
                     q1f.value_numeric
                         .saturating_add(q2f.value_numeric)
                         .saturating_add(q3f.value_numeric),
-                ),
+                    q3f.period_end,
+                )),
                 _ => None,
             };
-            if let Some(nm) = nine_m_value {
+            if let Some((nm, nine_m_end)) = nine_m_value {
                 let value = fy_f.value_numeric.saturating_sub(nm);
-                push_derived_single_input(&mut out, metric, fy_f, 4, value);
+                push_derived_single_input(&mut out, metric, fy_f, 4, value, next_day(nine_m_end));
             }
         }
     }
@@ -299,11 +308,15 @@ fn push_derived(
     out: &mut Vec<QuarterValue>,
     metric: Metric,
     minuend: &RawFact,
-    _subtrahend: &RawFact,
+    subtrahend: &RawFact,
     fq: u8,
     value: i64,
 ) {
-    let start = minuend.period_start.unwrap_or(minuend.period_end);
+    // The derived single quarter spans (subtrahend_end, minuend_end]: e.g.
+    // Q2 = H1 − Q1 covers the period after Q1 ends through the H1 close.
+    // Use the day after the subtrahend's period to anchor the start, not
+    // the minuend's (cumulative) start, which would be the fiscal-year start.
+    let start = next_day(subtrahend.period_end);
     out.push(QuarterValue {
         metric,
         cik: minuend.cik.clone(),
@@ -324,8 +337,11 @@ fn push_derived_single_input(
     minuend: &RawFact,
     fq: u8,
     value: i64,
+    // Start of the derived single quarter. The minuend is a cumulative
+    // (YTD or full-year) fact whose own start is the fiscal-year start, so
+    // the caller passes the boundary after the prior period instead.
+    start: NaiveDate,
 ) {
-    let start = minuend.period_start.unwrap_or(minuend.period_end);
     out.push(QuarterValue {
         metric,
         cik: minuend.cik.clone(),
@@ -338,6 +354,12 @@ fn push_derived_single_input(
         source_kind: minuend.source_kind,
         derived: true,
     });
+}
+
+/// The day after `d`, saturating at `d` if `d` is the maximum representable
+/// date (never expected for filing dates).
+fn next_day(d: NaiveDate) -> NaiveDate {
+    d.succ_opt().unwrap_or(d)
 }
 
 #[cfg(test)]
@@ -429,6 +451,46 @@ mod tests {
         let q4 = q.iter().find(|x| x.fq == 4).unwrap();
         assert_eq!(q4.value, 100);
         assert!(q4.derived);
+    }
+
+    #[test]
+    fn derived_quarters_start_after_the_prior_period_not_at_fy_start() {
+        // A YTD-style filer: Q1/H1/9M/FY are all cumulative from the
+        // fiscal-year start. The single-quarter derivations for Q2, Q3 and
+        // Q4 must each begin the day after the prior period ends, otherwise
+        // every derived quarter's start collapses to the fiscal-year start
+        // (which previously sorted Q4 before Q2/Q3 when ordering by start).
+        let raw = vec![
+            rf_dates(("us-gaap", "Revenues"), "Q1", d(2024, 1, 1), d(2024, 3, 31), 100),
+            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 1, 1), d(2024, 6, 30), 250),
+            rf_dates(("us-gaap", "Revenues"), "Q3", d(2024, 1, 1), d(2024, 9, 30), 450),
+            rf_dates(("us-gaap", "Revenues"), "FY", d(2024, 1, 1), d(2024, 12, 31), 700),
+        ];
+        let (q, _) = reconcile_quarters(&raw, "12-31");
+
+        let q2 = q.iter().find(|x| x.fq == 2).unwrap();
+        assert!(q2.derived);
+        assert_eq!(q2.value, 150);
+        assert_eq!(q2.period_start, d(2024, 4, 1), "Q2 starts after Q1 ends");
+        assert_eq!(q2.period_end, d(2024, 6, 30));
+
+        let q3 = q.iter().find(|x| x.fq == 3).unwrap();
+        assert!(q3.derived);
+        assert_eq!(q3.value, 200);
+        assert_eq!(q3.period_start, d(2024, 7, 1), "Q3 starts after H1 ends");
+        assert_eq!(q3.period_end, d(2024, 9, 30));
+
+        let q4 = q.iter().find(|x| x.fq == 4).unwrap();
+        assert!(q4.derived);
+        assert_eq!(q4.value, 250);
+        assert_eq!(q4.period_start, d(2024, 10, 1), "Q4 starts after 9M ends");
+        assert_eq!(q4.period_end, d(2024, 12, 31));
+
+        // Ordering by period_start must now match fiscal-quarter order.
+        let mut by_start = q.clone();
+        by_start.sort_by_key(|x| x.period_start);
+        let order: Vec<u8> = by_start.iter().map(|x| x.fq).collect();
+        assert_eq!(order, vec![1, 2, 3, 4]);
     }
 
     #[test]

@@ -67,7 +67,7 @@ impl DerivedMetricRepo for SqliteDerivedMetricRepo {
              FROM derived_metric d
              JOIN period p ON p.id = d.period_id
              WHERE d.cik = ?1 AND d.formula_id = ?2 AND p.kind = ?3
-             ORDER BY p.start_date"
+             ORDER BY p.end_date"
         )?;
         let rows = stmt.query_map(rusqlite::params![cik.0, formula, kind.as_str()], |r| {
             Ok((
