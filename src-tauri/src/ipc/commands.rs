@@ -89,7 +89,9 @@ pub async fn get_metric_history(
 ///   often banks — don't report PaymentsToAcquirePropertyPlantAndEquipment).
 ///
 /// Other metrics pass through unchanged. Result is sorted by
-/// `period.start_date`.
+/// `period.end_date` (the true period close; monotonic for both annual
+/// and quarterly series even when a derived quarter's start_date is the
+/// fiscal-year start).
 async fn revenue_aware_series(
     state: &AppState,
     cik: &Cik,
@@ -135,7 +137,7 @@ async fn revenue_aware_series(
                 });
             }
         }
-        out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+        out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     }
     Ok(out)
 }
@@ -197,7 +199,7 @@ async fn gross_profit_series(
             });
         }
     }
-    out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
 }
 
@@ -239,7 +241,7 @@ async fn total_debt_series(
             normalized_fact_id: -1,
         })
         .collect();
-    out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
 }
 
@@ -339,7 +341,7 @@ async fn capital_expenditures_series(
             normalized_fact_id: -1,
         });
     }
-    out.sort_by(|a, b| a.period.start_date.cmp(&b.period.start_date));
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
 }
 
