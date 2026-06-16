@@ -1,16 +1,19 @@
 import ReactECharts from "echarts-for-react";
 
-import { fmtUsdCompact, microToUsd } from "@/api/types";
+import { fmtUsdCompact, isRatioMetric, microToPercent, microToUsd } from "@/api/types";
 import type { MetricSeriesPoint } from "@/api/types";
 
 interface Props {
   series: MetricSeriesPoint[];
   title?: string;
   height?: number;
+  /** Metric id — drives unit-aware (USD vs percentage) axis/tooltip formatting. */
+  metric?: string;
 }
 
 /** Time-series line chart for a single metric (M38). */
-export default function MetricChart({ series, title, height = 320 }: Props) {
+export default function MetricChart({ series, title, height = 320, metric }: Props) {
+  const ratio = isRatioMetric(metric ?? "");
   if (series.length === 0) {
     return (
       <div
@@ -27,7 +30,7 @@ export default function MetricChart({ series, title, height = 320 }: Props) {
       ? `FY${p.period.fiscal_year} Q${p.period.fiscal_quarter}`
       : `FY${p.period.fiscal_year}`,
   );
-  const data = series.map((p) => microToUsd(p.value));
+  const data = series.map((p) => (ratio ? microToPercent(p.value) : microToUsd(p.value)));
 
   const option = {
     backgroundColor: "transparent",
@@ -38,7 +41,8 @@ export default function MetricChart({ series, title, height = 320 }: Props) {
       trigger: "axis",
       formatter: (params: { axisValue: string; data: number }[]) => {
         const p = params[0];
-        return `${p.axisValue}: ${fmtUsdCompact(p.data * 1_000_000)}`;
+        const label = ratio ? `${p.data.toFixed(1)}%` : fmtUsdCompact(p.data * 1_000_000);
+        return `${p.axisValue}: ${label}`;
       },
       backgroundColor: "rgba(22,25,32,0.95)",
       borderColor: "#242933",
@@ -58,7 +62,8 @@ export default function MetricChart({ series, title, height = 320 }: Props) {
       axisLabel: {
         color: "#8c95a8",
         fontSize: 11,
-        formatter: (v: number) => fmtUsdCompact(v * 1_000_000).replace("$", ""),
+        formatter: (v: number) =>
+          ratio ? `${v.toFixed(0)}%` : fmtUsdCompact(v * 1_000_000).replace("$", ""),
       },
     },
     series: [

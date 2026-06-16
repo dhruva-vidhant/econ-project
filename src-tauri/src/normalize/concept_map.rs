@@ -72,6 +72,11 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
             ("us-gaap", "ShortTermBorrowings"),
         ],
         Metric::TotalDebt => &[], // derived at read time from LongTermDebt + CurrentDebt
+        // Purely derived at read time (no source XBRL concept):
+        //   free_cash_flow   = net_income + depreciation_amortization − capital_expenditures
+        //   operating_margin = operating_income ÷ revenue
+        Metric::FreeCashFlow => &[],
+        Metric::OperatingMargin => &[],
         Metric::TotalAssets => &[("us-gaap", "Assets")],
         Metric::TotalLiabilities => &[("us-gaap", "Liabilities")],
         Metric::TotalEquity => &[

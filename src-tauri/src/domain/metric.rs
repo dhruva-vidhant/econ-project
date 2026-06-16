@@ -35,6 +35,12 @@ pub enum Metric {
     NoninterestIncome,
     InterestIncomeOperating,
     InterestExpense,
+    // Derived (multi-input / ratio), computed at read time. See
+    // `derived::series` and architecture §6.2.
+    //   free_cash_flow  = net_income + depreciation_amortization − capital_expenditures
+    //   operating_margin = operating_income ÷ revenue (decimal ratio, ×1e6 per §6.2)
+    FreeCashFlow,
+    OperatingMargin,
     // Market (derived)
     HistoricalMarketCap,
     CurrentMarketCap,
@@ -67,6 +73,8 @@ impl Metric {
             Metric::NoninterestIncome => "noninterest_income",
             Metric::InterestIncomeOperating => "interest_income_operating",
             Metric::InterestExpense => "interest_expense",
+            Metric::FreeCashFlow => "free_cash_flow",
+            Metric::OperatingMargin => "operating_margin",
             Metric::HistoricalMarketCap => "historical_market_cap",
             Metric::CurrentMarketCap => "current_market_cap",
         }
@@ -98,6 +106,8 @@ impl Metric {
             "noninterest_income" => Metric::NoninterestIncome,
             "interest_income_operating" => Metric::InterestIncomeOperating,
             "interest_expense" => Metric::InterestExpense,
+            "free_cash_flow" => Metric::FreeCashFlow,
+            "operating_margin" => Metric::OperatingMargin,
             "historical_market_cap" => Metric::HistoricalMarketCap,
             "current_market_cap" => Metric::CurrentMarketCap,
             _ => return None,
@@ -116,6 +126,7 @@ impl Metric {
         Metric::PropertyPlantAndEquipmentNet,
         Metric::NetInterestIncome, Metric::NoninterestIncome,
         Metric::InterestIncomeOperating, Metric::InterestExpense,
+        Metric::FreeCashFlow, Metric::OperatingMargin,
         Metric::HistoricalMarketCap, Metric::CurrentMarketCap,
     ];
 

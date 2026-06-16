@@ -45,6 +45,7 @@ export type Metric =
   | "cash_and_equivalents" | "long_term_debt" | "current_debt" | "total_debt"
   | "total_assets" | "total_liabilities" | "total_equity"
   | "cash_from_operations" | "capital_expenditures" | "depreciation_amortization"
+  | "free_cash_flow" | "operating_margin"
   | "historical_market_cap" | "current_market_cap";
 
 /** Pretty display label for a metric (e.g. "Net Income"). */
@@ -162,8 +163,38 @@ export interface MetricSeriesPoint {
   normalized_fact_id: number;
 }
 
+/**
+ * Metrics whose stored value is a dimensionless decimal ratio (×1e6 per
+ * architecture §6.2) rather than a USD amount, and so must render as a
+ * percentage rather than currency.
+ */
+export const RATIO_METRICS: ReadonlySet<string> = new Set(["operating_margin"]);
+
+export function isRatioMetric(metric: string): boolean {
+  return RATIO_METRICS.has(metric);
+}
+
 /** Convert a stored micro-unit value to USD dollars (with sign preserved). */
 export function microToUsd(micro: number): number { return micro / 1_000_000; }
+
+/**
+ * Convert a stored ratio micro-value (ratio × 1e6) to a percentage number.
+ * e.g. 253_000 → 25.3.
+ */
+export function microToPercent(micro: number): number { return micro / 10_000; }
+
+/** Format a ratio micro-value as a percentage ("35.5%"). */
+export function fmtPercent(micro: number): string {
+  return `${microToPercent(micro).toFixed(1)}%`;
+}
+
+/**
+ * Format a metric value for display, dispatching on the metric's unit:
+ * ratio metrics render as a percentage, everything else as compact USD.
+ */
+export function fmtMetricValue(metric: string, micro: number): string {
+  return isRatioMetric(metric) ? fmtPercent(micro) : fmtUsdCompact(micro);
+}
 
 /** Format a USD micro-unit value as compact ("$3.83B"). */
 export function fmtUsdCompact(micro: number): string {

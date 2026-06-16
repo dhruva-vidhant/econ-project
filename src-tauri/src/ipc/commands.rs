@@ -3,13 +3,11 @@
 use serde::Serialize;
 use tauri::State;
 
-use std::collections::HashSet;
-
-use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, Period, PeriodKind, Ticker};
+use crate::derived::series::{self, MetricSeriesPoint};
+use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, PeriodKind, Ticker};
 use crate::errors::AppError;
 use crate::pipeline::{ingest_company, IngestionSummary};
 use crate::repos::company::CompanyRepo;
-use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
@@ -52,14 +50,6 @@ pub async fn remove_company(
     state.companies.remove(&cik, drop_cache).await.map_err(Into::into)
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct MetricSeriesPoint {
-    pub period: Period,
-    pub value: i64,
-    pub source_kind: String,
-    pub normalized_fact_id: i64,
-}
-
 #[tauri::command]
 pub async fn get_metric_history(
     state: State<'_, AppState>,
@@ -72,277 +62,14 @@ pub async fn get_metric_history(
         .ok_or_else(|| AppError::invalid(format!("unknown metric: {metric}")))?;
     let kind = PeriodKind::from_str(&kind)
         .ok_or_else(|| AppError::invalid(format!("unknown period kind: {kind}")))?;
-    revenue_aware_series(state.inner(), &cik, metric, kind).await
-}
-
-/// Like `current_series` but with read-time derivations layered on top:
-///
-/// - **Revenue**: fills missing periods from `derived_metric` rows with
-///   `formula_id = "bank_revenue_v1"` (see pipeline::orchestrator).
-/// - **TotalDebt**: computed as `LongTermDebt + CurrentDebt` per period.
-///   Missing input treated as 0; row omitted only if both inputs missing.
-/// - **GrossProfit**: when no directly-filed value exists, computed as
-///   `Revenue - CostOfRevenue` per period. Both inputs required.
-/// - **CapitalExpenditures**: when no directly-filed value exists,
-///   computed as `ΔPropertyPlantAndEquipmentNet + DepreciationAndAmortization`
-///   per period (the canonical reconstruction used when filers — most
-///   often banks — don't report PaymentsToAcquirePropertyPlantAndEquipment).
-///
-/// Other metrics pass through unchanged. Result is sorted by
-/// `period.end_date` (the true period close; monotonic for both annual
-/// and quarterly series even when a derived quarter's start_date is the
-/// fiscal-year start).
-async fn revenue_aware_series(
-    state: &AppState,
-    cik: &Cik,
-    metric: Metric,
-    kind: PeriodKind,
-) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    if matches!(metric, Metric::TotalDebt) {
-        return total_debt_series(state, cik, kind).await;
-    }
-    if matches!(metric, Metric::GrossProfit) {
-        return gross_profit_series(state, cik, kind).await;
-    }
-    if matches!(metric, Metric::CapitalExpenditures) {
-        return capital_expenditures_series(state, cik, kind).await;
-    }
-
-    let direct = state.normalized_facts.current_series(cik, metric, kind.clone()).await?;
-    let mut out: Vec<MetricSeriesPoint> = direct
-        .into_iter()
-        .map(|(p, n)| MetricSeriesPoint {
-            period: p,
-            value: n.value,
-            source_kind: n.source_kind.as_str().into(),
-            normalized_fact_id: n.id,
-        })
-        .collect();
-
-    if matches!(metric, Metric::Revenue) {
-        let covered: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
-        let derived = state.derived_metrics.series(cik, "bank_revenue_v1", kind).await?;
-        for (period, dm) in derived {
-            if covered.contains(&period.id) { continue; }
-            if let Some(value) = dm.value {
-                out.push(MetricSeriesPoint {
-                    period,
-                    value,
-                    source_kind: "derived".into(),
-                    // Sentinel: derived rows have no underlying single
-                    // normalized_fact id. The lineage drawer treats this
-                    // value as a derivation and skips the single-fact
-                    // walk; see followup.md for richer derivation lineage.
-                    normalized_fact_id: -1,
-                });
-            }
-        }
-        out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
-    }
-    Ok(out)
-}
-
-/// Gross profit is `Revenue - CostOfRevenue` per period, but only when
-/// no directly-filed `GrossProfit` fact is present. Companies that file
-/// GrossProfit directly (e.g., most retailers, manufacturers) keep their
-/// authoritative value; companies that don't (banks, some service-only
-/// filers) get the derived value when both Revenue and CostOfRevenue
-/// are available.
-async fn gross_profit_series(
-    state: &AppState,
-    cik: &Cik,
-    kind: PeriodKind,
-) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    use std::collections::{BTreeMap, HashSet};
-
-    // Direct GrossProfit facts win when present.
-    let direct = state
-        .normalized_facts
-        .current_series(cik, Metric::GrossProfit, kind.clone())
-        .await?;
-    let mut out: Vec<MetricSeriesPoint> = direct
-        .into_iter()
-        .map(|(p, n)| MetricSeriesPoint {
-            period: p,
-            value: n.value,
-            source_kind: n.source_kind.as_str().into(),
-            normalized_fact_id: n.id,
-        })
-        .collect();
-    let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
-
-    // For periods without a direct fact: derive Revenue - CostOfRevenue.
-    // Box the recursive call (via Box::pin) so the future has a known size.
-    let rev = Box::pin(revenue_aware_series(state, cik, Metric::Revenue, kind.clone())).await?;
-    let cor = state
-        .normalized_facts
-        .current_series(cik, Metric::CostOfRevenue, kind)
-        .await?;
-
-    let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
-    for p in rev {
-        if direct_periods.contains(&p.period.id) { continue; }
-        by_pid.entry(p.period.id).or_insert((p.period.clone(), None, None)).1 = Some(p.value);
-    }
-    for (p, n) in cor {
-        if direct_periods.contains(&p.id) { continue; }
-        by_pid.entry(p.id).or_insert((p, None, None)).2 = Some(n.value);
-    }
-
-    for (_, (period, rev_v, cor_v)) in by_pid {
-        if let (Some(r), Some(c)) = (rev_v, cor_v) {
-            out.push(MetricSeriesPoint {
-                period,
-                value: r.saturating_sub(c),
-                source_kind: "derived".into(),
-                normalized_fact_id: -1,
-            });
-        }
-    }
-    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
-    Ok(out)
-}
-
-/// Total debt is `LongTermDebt + CurrentDebt`, per-period. We join the
-/// two component series by `period.id`; if a period has at least one
-/// component, we emit a row (treating the missing one as 0). If neither
-/// component is present, no row is emitted.
-async fn total_debt_series(
-    state: &AppState,
-    cik: &Cik,
-    kind: PeriodKind,
-) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    use std::collections::BTreeMap;
-
-    let lt = state
-        .normalized_facts
-        .current_series(cik, Metric::LongTermDebt, kind.clone())
-        .await?;
-    let cd = state
-        .normalized_facts
-        .current_series(cik, Metric::CurrentDebt, kind)
-        .await?;
-
-    // Key by period.id so we can sum components without losing the period record.
-    let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
-    for (p, n) in lt {
-        by_pid.entry(p.id).or_insert((p, None, None)).1 = Some(n.value);
-    }
-    for (p, n) in cd {
-        by_pid.entry(p.id).or_insert((p, None, None)).2 = Some(n.value);
-    }
-
-    let mut out: Vec<MetricSeriesPoint> = by_pid
-        .into_values()
-        .map(|(period, lt_v, cd_v)| MetricSeriesPoint {
-            period,
-            value: lt_v.unwrap_or(0).saturating_add(cd_v.unwrap_or(0)),
-            source_kind: "derived".into(),
-            normalized_fact_id: -1,
-        })
-        .collect();
-    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
-    Ok(out)
-}
-
-/// Capital expenditures, with read-time derivation for periods where the
-/// filer didn't report `PaymentsToAcquirePropertyPlantAndEquipment`.
-///
-/// Formula:
-///   `CapEx(t) ≈ PP&E_Net(end of t) − PP&E_Net(end of prior period) + DepreciationAndAmortization(t)`
-///
-/// This is the standard reconstruction from the cash-flow / balance
-/// roll-forward identity:
-///   `PP&E_Net(end) = PP&E_Net(begin) + Additions − Depreciation − Disposals`
-/// Solving for Additions and ignoring disposals (which we cannot observe
-/// from these inputs alone) yields the formula above. For most filers
-/// the omission is small; for filers with significant asset disposals
-/// the derived value is an upper bound on capital expenditures.
-///
-/// Behavior:
-/// - Periods with a directly-filed value pass through unchanged.
-/// - Periods missing direct value are derived if all three inputs are
-///   available: PP&E_Net at the period's end_date, PP&E_Net at the most
-///   recent earlier observation, and DepreciationAndAmortization for
-///   the period.
-/// - Negative or zero derivations (which would imply more disposals than
-///   purchases — implausible for capital expenditures as a positive-only
-///   metric) are skipped per the project accuracy rule.
-async fn capital_expenditures_series(
-    state: &AppState,
-    cik: &Cik,
-    kind: PeriodKind,
-) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    use std::collections::{BTreeMap, HashSet};
-
-    // Direct values win.
-    let direct = state
-        .normalized_facts
-        .current_series(cik, Metric::CapitalExpenditures, kind.clone())
-        .await?;
-    let mut out: Vec<MetricSeriesPoint> = direct
-        .into_iter()
-        .map(|(p, n)| MetricSeriesPoint {
-            period: p,
-            value: n.value,
-            source_kind: n.source_kind.as_str().into(),
-            normalized_fact_id: n.id,
-        })
-        .collect();
-    let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
-
-    // Property, plant & equipment net is an instant. Q4 / FY observations
-    // attach to the annual period; Q1, Q2, Q3 attach to quarterly periods.
-    // To find the right "prior" balance for any period, gather every
-    // observation across both kinds and key by end_date.
-    let ppne_a = state
-        .normalized_facts
-        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Annual)
-        .await?;
-    let ppne_q = state
-        .normalized_facts
-        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Quarterly)
-        .await?;
-    let mut ppne_by_end: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
-    for (p, n) in ppne_a.iter().chain(ppne_q.iter()) {
-        ppne_by_end.insert(p.end_date, n.value);
-    }
-
-    // DepreciationAndAmortization for the requested kind. The set of
-    // periods in this series drives candidate periods for derivation —
-    // we can only derive a period that has a depreciation value and
-    // a closing PP&E observation matching its end_date.
-    let da = state
-        .normalized_facts
-        .current_series(cik, Metric::DepreciationAmortization, kind)
-        .await?;
-
-    for (period, da_n) in da {
-        if direct_periods.contains(&period.id) {
-            continue;
-        }
-        let Some(&ppne_end) = ppne_by_end.get(&period.end_date) else {
-            continue;
-        };
-        let Some((_, &ppne_start)) = ppne_by_end.range(..period.end_date).next_back() else {
-            continue;
-        };
-        let value = ppne_end
-            .saturating_sub(ppne_start)
-            .saturating_add(da_n.value);
-        // Capital expenditures is positive-only; skip implausible results.
-        if value <= 0 {
-            continue;
-        }
-        out.push(MetricSeriesPoint {
-            period,
-            value,
-            source_kind: "derived".into(),
-            normalized_fact_id: -1,
-        });
-    }
-    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
-    Ok(out)
+    series::revenue_aware_series(
+        state.normalized_facts.as_ref(),
+        state.derived_metrics.as_ref(),
+        &cik,
+        metric,
+        kind,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -374,17 +101,26 @@ pub async fn get_dashboard(
     for metric in &[
         Metric::Revenue,
         Metric::NetIncome,
+        Metric::FreeCashFlow,
+        Metric::TotalDebt,
         Metric::CashAndEquivalents,
         Metric::TotalAssets,
         Metric::TotalLiabilities,
     ] {
-        let series = revenue_aware_series(state.inner(), &cik, *metric, PeriodKind::Annual).await?;
-        if series.is_empty() { continue; }
-        let history: Vec<(String, i64)> = series
+        let points = series::revenue_aware_series(
+            state.normalized_facts.as_ref(),
+            state.derived_metrics.as_ref(),
+            &cik,
+            *metric,
+            PeriodKind::Annual,
+        )
+        .await?;
+        if points.is_empty() { continue; }
+        let history: Vec<(String, i64)> = points
             .iter()
             .map(|p| (format!("FY{}", p.period.fiscal_year), p.value))
             .collect();
-        let last = series.last().unwrap();
+        let last = points.last().unwrap();
         widgets.push(DashboardWidget {
             metric: metric.as_str().into(),
             period_label: format!("FY{}", last.period.fiscal_year),

@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { fmtUsdCompact, prettyMetric } from "@/api/types";
+import { fmtMetricValue, prettyMetric } from "@/api/types";
 import { useCompanies, useMetricHistory } from "@/state/queries";
 
 const STATEMENT_METRICS: Record<string, string[]> = {
   income: [
     "revenue", "cost_of_revenue", "gross_profit",
-    "operating_income", "net_income",
+    "operating_income", "operating_margin", "net_income",
     "eps_basic", "eps_diluted",
   ],
   balance: [
@@ -16,6 +16,7 @@ const STATEMENT_METRICS: Record<string, string[]> = {
   ],
   cashflow: [
     "cash_from_operations", "capital_expenditures", "depreciation_amortization",
+    "free_cash_flow",
   ],
 };
 
@@ -130,7 +131,7 @@ function StatementRow({
         <td key={i} className="px-3 py-1.5 text-right font-mono">
           {p ? (
             <>
-              <div>{fmtUsdCompact(p.value)}</div>
+              <div>{fmtMetricValue(metric, p.value)}</div>
               <div className="text-[10px] text-muted">
                 {p.period.kind === "quarterly"
                   ? `FY${p.period.fiscal_year} Q${p.period.fiscal_quarter}`

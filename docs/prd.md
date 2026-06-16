@@ -392,6 +392,7 @@ Must support:
 V1 supports predefined formulas only. Required derivations include:
 
 - **Free cash flow** (see FR-032).
+- **Operating margin** (see FR-033).
 - **Total debt** = `long_term_debt + current_debt`, computed at read time so each input's most-recent primary value is used.
 - **Gross profit** = `revenue − cost_of_revenue`, used when the issuer does not directly tag a gross-profit value.
 - **Capital expenditures fallback**: when no explicit cash-flow CapEx value is reported (some bank/financial filers omit it), derive from the property, plant and equipment roll-forward — `capital_expenditures = ΔPP&E_net + depreciation_and_amortization` — using the same period's PP&E delta and depreciation. Lineage records both inputs.
@@ -407,11 +408,37 @@ Users must be able to inspect formulas used.
 
 ### FR-032 — Free Cash Flow
 
-Must support FCF computation using predefined formula.
+Must support free cash flow computation using a predefined formula, derived at
+read time per period (so each input uses its most-recent primary value):
 
-Free cash flow example:
+```
+free_cash_flow = net_income + depreciation_and_amortization − capital_expenditures
+```
 
-FCF = Net Income − Depreciation & Amortization + Capital Expenditures
+Sign convention: capital expenditures is stored as a positive cash outflow
+(sign-normalized per §6.2), so it is subtracted; depreciation and amortization
+is a positive non-cash add-back. All three inputs are required for a period —
+a period missing any input is omitted rather than reported with an input
+silently treated as zero. Capital expenditures uses the same read-time series
+as FR-030 (including the property-plant-and-equipment roll-forward fallback),
+so free cash flow is available for filers that do not tag cash-flow capital
+expenditures directly.
+
+### FR-033 — Operating Margin
+
+Must support operating margin as a predefined derived metric, computed at read
+time per period:
+
+```
+operating_margin = operating_income ÷ revenue
+```
+
+Stored as a dimensionless decimal ratio in micro-units (ratio × 1,000,000, per
+the §6.2 convention for pure ratios); for example a 25.3% margin is `253000`.
+Revenue uses the read-time revenue series (including the bank-revenue
+fallback). Both inputs are required; a period whose revenue is non-positive is
+omitted (the margin is undefined). An operating loss yields a valid negative
+margin and is preserved. The UI renders the value as a percentage.
 
 ---
 

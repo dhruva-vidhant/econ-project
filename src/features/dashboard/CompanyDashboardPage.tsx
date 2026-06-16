@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
-import { fmtUsdCompact, prettyMetric } from "@/api/types";
+import { fmtMetricValue, prettyMetric } from "@/api/types";
 import {
   useCompanies,
   useDashboard,
@@ -74,7 +74,7 @@ export default function CompanyDashboardPage() {
                 <div className="text-[11px] uppercase tracking-wide text-muted">
                   {prettyMetric(w.metric)}
                 </div>
-                <div className="my-1 font-mono text-xl">{fmtUsdCompact(w.value_micro)}</div>
+                <div className="my-1 font-mono text-xl">{fmtMetricValue(w.metric, w.value_micro)}</div>
                 <div className="text-[11px] text-muted">{w.period_label}</div>
               </button>
             ))}
@@ -159,7 +159,7 @@ function ChartCard({
   const { data } = useMetricHistory(cik, metric, kind);
   return (
     <div>
-      <MetricChart series={data ?? []} title={prettyMetric(metric)} height={220} />
+      <MetricChart series={data ?? []} title={prettyMetric(metric)} metric={metric} height={220} />
     </div>
   );
 }

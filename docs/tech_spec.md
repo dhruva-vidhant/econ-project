@@ -540,9 +540,11 @@ pub async fn ingest_company(
 #### M28 — Derived metric registry + formulas
 **Developer.** Two persistence styles:
 
-- **Persisted at ingest, written to `derived_metric`:** `historical_market_cap_v1`, `bank_revenue_v1` (steps 3–4 of architecture §8.1, run only when no direct `Revenue` exists for the period; positivity-guarded), `fcf_v1`.
-- **Read-time only, computed in IPC handlers from `normalized_fact` rows:** `total_debt_v1`, `gross_profit_v1`, `capital_expenditures_v1` (the PP&E-roll-forward fallback `ΔPP&E_net + D&A`, used when no explicit cash-flow CapEx is tagged). Read-time avoids stale-cache hazards when an input is superseded.
+- **Persisted at ingest, written to `derived_metric`:** `historical_market_cap_v1`, `bank_revenue_v1` (steps 3–4 of architecture §8.1, run only when no direct `Revenue` exists for the period; positivity-guarded).
+- **Read-time only, computed from `normalized_fact` rows:** `total_debt_v1`, `gross_profit_v1`, `capital_expenditures_v1` (the PP&E-roll-forward fallback `ΔPP&E_net + D&A`, used when no explicit cash-flow CapEx is tagged), `free_cash_flow_v1` (`net_income + depreciation_amortization − capital_expenditures`; all three inputs required), and `operating_margin_v1` (`operating_income ÷ revenue`, stored as a ratio ×1e6; omitted when revenue ≤ 0). Read-time avoids stale-cache hazards when an input is superseded. The pure formulas live in `derived` (unit-tested); the per-period series assembly lives in `derived::series`, parameterized over the repository traits so IPC and integration tests share one path.
 - **Live-only, never persisted:** `current_market_cap_v1`.
+
+> **Note (revision).** An earlier draft listed `fcf_v1` as *persisted at ingest*. Free cash flow moved to the **read-time** family alongside `total_debt`/`gross_profit`/`capital_expenditures` for the same reason: a persisted sum goes stale when any of net income, depreciation & amortization, or capital expenditures is superseded by a later filing. `operating_margin_v1` was added in the same revision (PRD FR-033).
 
 **Depends on:** M03, M11, M17.
 **Public interface:**
@@ -558,7 +560,7 @@ pub fn registry() -> Vec<Box<dyn Formula>>;
 // revenue with bank_revenue_v1 derived rows.
 pub async fn revenue_aware_series(/* ... */) -> Result<MetricSeries, IpcError>;
 ```
-**DoD:** Per-formula unit tests with synthesized inputs; `is_complete = false` returned cleanly when any input missing. Bank-revenue chain: step 3 picked when both inputs present; step 4 picked when `NetInterestIncome` absent but the `(IIO, IE, NoniI)` triple is present; non-positive derived value skipped + warned.
+**DoD:** Per-formula unit tests with synthesized inputs; `is_complete = false` returned cleanly when any input missing. Bank-revenue chain: step 3 picked when both inputs present; step 4 picked when `NetInterestIncome` absent but the `(IIO, IE, NoniI)` triple is present; non-positive derived value skipped + warned. Free cash flow and operating margin: pure-formula unit tests in `derived` (exact micro-unit values, overflow saturation, undefined-margin handling) plus a production-mode end-to-end accuracy test (`integration_derived_metrics`) that runs the read-time series over the real ingested DB and asserts (a) internal consistency — every emitted value re-derives from independently-fetched component series — (b) coverage matches exactly the periods with all inputs, and (c) hand-verified figures (Zoetis FY2025, Dollar General FY2026, lululemon FY2026).
 
 ---
 

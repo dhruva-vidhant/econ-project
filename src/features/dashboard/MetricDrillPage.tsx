@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
-import { fmtUsdCompact, prettyMetric } from "@/api/types";
+import { fmtMetricValue, prettyMetric } from "@/api/types";
 import { useCompanies, useMetricHistory } from "@/state/queries";
 
 const PRETTY: Record<string, string> = {
@@ -50,7 +50,7 @@ export default function MetricDrillPage() {
         </header>
 
         <div className="mb-4">
-          <MetricChart series={series} height={360} />
+          <MetricChart series={series} metric={metric} height={360} />
         </div>
 
         <section className="rounded border border-border/60 bg-surface">
@@ -79,7 +79,7 @@ export default function MetricDrillPage() {
                       : `FY${p.period.fiscal_year}`}
                   </td>
                   <td className="px-3 py-1.5 text-muted">{p.period.start_date} → {p.period.end_date}</td>
-                  <td className="px-3 py-1.5 text-right font-mono">{fmtUsdCompact(p.value)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{fmtMetricValue(metric ?? "", p.value)}</td>
                   <td className="px-3 py-1.5 text-muted">{p.source_kind}</td>
                   <td className="px-3 py-1.5 text-right">
                     {p.normalized_fact_id > 0 ? (
