@@ -22,6 +22,8 @@ use econ_project_lib::repos::ingestion_event::{IngestionEventRepo, SqliteIngesti
 use econ_project_lib::repos::normalized_fact::{NormalizedFactRepo, SqliteNormalizedFactRepo};
 use econ_project_lib::repos::period::SqlitePeriodRepo;
 use econ_project_lib::repos::raw_fact::{RawFactRepo, SqliteRawFactRepo};
+use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
+use econ_project_lib::sources::market_data::YahooMarketData;
 use econ_project_lib::sources::sec_client::SecClient;
 
 #[tokio::test]
@@ -44,12 +46,14 @@ async fn ingest_aapl_against_real_sec() {
     let derived_metrics: Arc<SqliteDerivedMetricRepo> = Arc::new(SqliteDerivedMetricRepo::new(pool.clone()));
     let deps = IngestionDeps {
         sec,
+        market_data: Arc::new(YahooMarketData::new().unwrap()),
         companies: companies.clone(),
         filings: filings.clone(),
         periods: periods.clone(),
         raw_facts: raw_facts.clone(),
         normalized_facts: normalized_facts.clone(),
         derived_metrics: derived_metrics.clone(),
+        prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
         events: events.clone(),
     };
 

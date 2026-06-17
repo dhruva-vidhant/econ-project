@@ -53,6 +53,32 @@ pub fn operating_margin_micro(operating_income: i64, revenue: i64) -> Option<i64
     Some(scaled as i64)
 }
 
+/// Market capitalization in USD micro-units `= close_price × shares`.
+///
+/// `close_micro` is the share price in micro-units (USD × 1e6, per §6.2) and
+/// `shares` is an absolute share count, so the product is already in
+/// micro-units. Computed in i128 and saturated into i64 (a market cap above
+/// ±$9.2T would overflow i64 micro-units — implausible, but clamped rather
+/// than wrapped).
+pub fn market_cap(close_micro: i64, shares: i64) -> i64 {
+    let product = (close_micro as i128) * (shares as i128);
+    product.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
+/// Free cash flow yield `= free_cash_flow ÷ market_cap`, returned as a decimal
+/// ratio in micro-units (ratio × 1e6, per §6.2) — e.g. a 4.0% yield is
+/// `40_000`. Both inputs are USD micro-units, whose scales cancel, so the
+/// quotient is scaled back up by 1e6. Returns `None` when market cap is
+/// non-positive (undefined). A cash-burning company yields a valid negative
+/// number, which is preserved.
+pub fn fcf_yield_micro(free_cash_flow: i64, market_cap: i64) -> Option<i64> {
+    if market_cap <= 0 {
+        return None;
+    }
+    let scaled = (free_cash_flow as i128) * 1_000_000 / (market_cap as i128);
+    Some(scaled as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +151,41 @@ mod tests {
         // $1T operating income in micro-units, $2T revenue → 0.5 → 500_000.
         let m = operating_margin_micro(1_000_000_000_000_000_000, 2_000_000_000_000_000_000);
         assert_eq!(m, Some(500_000));
+    }
+
+    // ── market_cap ────────────────────────────────────────────────────────
+
+    #[test]
+    fn market_cap_price_times_shares() {
+        // $190.45 close (190_450_000 micro) × 16,000,000,000 shares = $3.0472T.
+        assert_eq!(market_cap(190_450_000, 16_000_000_000), 3_047_200_000_000_000_000);
+    }
+
+    #[test]
+    fn market_cap_saturates_instead_of_wrapping() {
+        // Implausibly large inputs clamp to i64::MAX rather than wrapping.
+        assert_eq!(market_cap(i64::MAX, 1_000_000), i64::MAX);
+    }
+
+    // ── fcf_yield_micro ─────────────────────────────────────────────────────
+
+    #[test]
+    fn fcf_yield_basic() {
+        // $100B FCF / $2.5T market cap = 0.04 → 40_000 micro (4.0%).
+        let y = fcf_yield_micro(100_000_000_000_000_000, 2_500_000_000_000_000_000);
+        assert_eq!(y, Some(40_000));
+    }
+
+    #[test]
+    fn fcf_yield_negative_when_cash_burning() {
+        // −$50B FCF / $2.5T market cap = −0.02 → −20_000 micro (−2.0%).
+        let y = fcf_yield_micro(-50_000_000_000_000_000, 2_500_000_000_000_000_000);
+        assert_eq!(y, Some(-20_000));
+    }
+
+    #[test]
+    fn fcf_yield_undefined_for_nonpositive_market_cap() {
+        assert_eq!(fcf_yield_micro(1_000, 0), None);
+        assert_eq!(fcf_yield_micro(1_000, -5), None);
     }
 }

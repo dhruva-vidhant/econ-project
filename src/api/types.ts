@@ -46,14 +46,26 @@ export type Metric =
   | "total_assets" | "total_liabilities" | "total_equity"
   | "cash_from_operations" | "capital_expenditures" | "depreciation_amortization"
   | "free_cash_flow" | "operating_margin"
+  | "free_cash_flow_ttm" | "free_cash_flow_yield"
   | "historical_market_cap" | "current_market_cap";
+
+/** Display-label overrides where title-casing the snake_case id reads poorly. */
+const METRIC_LABELS: Record<string, string> = {
+  free_cash_flow_ttm: "Free Cash Flow (TTM)",
+  free_cash_flow_yield: "Free Cash Flow Yield",
+  historical_market_cap: "Market Cap",
+  current_market_cap: "Current Market Cap",
+};
 
 /** Pretty display label for a metric (e.g. "Net Income"). */
 export function prettyMetric(m: string): string {
-  return m
-    .split("_")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  return (
+    METRIC_LABELS[m] ??
+    m
+      .split("_")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ")
+  );
 }
 
 export interface AppError {
@@ -168,7 +180,10 @@ export interface MetricSeriesPoint {
  * architecture §6.2) rather than a USD amount, and so must render as a
  * percentage rather than currency.
  */
-export const RATIO_METRICS: ReadonlySet<string> = new Set(["operating_margin"]);
+export const RATIO_METRICS: ReadonlySet<string> = new Set([
+  "operating_margin",
+  "free_cash_flow_yield",
+]);
 
 export function isRatioMetric(metric: string): boolean {
   return RATIO_METRICS.has(metric);

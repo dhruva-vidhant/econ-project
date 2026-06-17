@@ -29,10 +29,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use econ_project_lib::db::Pool;
+use econ_project_lib::derived::series::ReadCtx;
 use econ_project_lib::derived::{self, series};
 use econ_project_lib::domain::{Cik, Metric, PeriodKind};
 use econ_project_lib::repos::company::{CompanyRepo, SqliteCompanyRepo};
 use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
+use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
 use econ_project_lib::repos::normalized_fact::{NormalizedFactRepo, SqliteNormalizedFactRepo};
 
 fn db_path() -> PathBuf {
@@ -59,16 +61,14 @@ async fn direct_map(
 }
 
 /// `(period_id, value)` map for a read-time-derived metric series (the exact
-/// IPC read path). `&SqliteNormalizedFactRepo` / `&SqliteDerivedMetricRepo`
-/// coerce to the `&dyn` trait-object parameters the series API expects.
+/// IPC read path).
 async fn series_map(
-    nf: &SqliteNormalizedFactRepo,
-    dm: &SqliteDerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     metric: Metric,
     kind: PeriodKind,
 ) -> HashMap<i64, i64> {
-    series::revenue_aware_series(nf, dm, cik, metric, kind)
+    series::revenue_aware_series(ctx, cik, metric, kind)
         .await
         .unwrap()
         .into_iter()
@@ -92,6 +92,8 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
     let companies = SqliteCompanyRepo::new(pool.clone());
     let nf = SqliteNormalizedFactRepo::new(pool.clone());
     let dm = SqliteDerivedMetricRepo::new(pool.clone());
+    let prices = SqliteHistoricalPriceRepo::new(pool.clone());
+    let ctx = ReadCtx { normalized_facts: &nf, derived_metrics: &dm, prices: &prices };
 
     let saved = companies.list_saved().await.unwrap();
     assert!(!saved.is_empty(), "production DB has no saved companies to validate");
@@ -106,10 +108,10 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
 
         for kind in [PeriodKind::Annual, PeriodKind::Quarterly] {
             // ── Free cash flow ────────────────────────────────────────────
-            let fcf = series_map(&nf, &dm, cik, Metric::FreeCashFlow, kind.clone()).await;
+            let fcf = series_map(&ctx, cik, Metric::FreeCashFlow, kind.clone()).await;
             let ni = direct_map(&nf, cik, Metric::NetIncome, kind.clone()).await;
             let da = direct_map(&nf, cik, Metric::DepreciationAmortization, kind.clone()).await;
-            let capex = series_map(&nf, &dm, cik, Metric::CapitalExpenditures, kind.clone()).await;
+            let capex = series_map(&ctx, cik, Metric::CapitalExpenditures, kind.clone()).await;
 
             // Internal consistency: every emitted FCF equals the formula
             // recomputed from independently-fetched components.
@@ -140,9 +142,9 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
             );
 
             // ── Operating margin ──────────────────────────────────────────
-            let margin = series_map(&nf, &dm, cik, Metric::OperatingMargin, kind.clone()).await;
+            let margin = series_map(&ctx, cik, Metric::OperatingMargin, kind.clone()).await;
             let oi = direct_map(&nf, cik, Metric::OperatingIncome, kind.clone()).await;
-            let rev = series_map(&nf, &dm, cik, Metric::Revenue, kind.clone()).await;
+            let rev = series_map(&ctx, cik, Metric::Revenue, kind.clone()).await;
 
             for (&pid, &got) in &margin {
                 let &o = oi.get(&pid).expect("margin period must have operating_income");
@@ -194,19 +196,19 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
 
     // ── Known-value spot checks (hand-verified from filings) ──────────────
     spot_check_annual(
-        &nf, &dm, &saved, "ZTS", 2025,
+        &ctx, &saved,"ZTS", 2025,
         Some(2_539_000_000_000_000), // FCF = $2.539B (NI 2.673 + D&A 0.487 − CapEx 0.621)
         Some(354_917),               // operating margin 35.49%
     )
     .await;
     spot_check_annual(
-        &nf, &dm, &saved, "DG", 2026,
+        &ctx, &saved,"DG", 2026,
         None,
         Some(45_982), // operating margin 4.60%
     )
     .await;
     spot_check_annual(
-        &nf, &dm, &saved, "LULU", 2026,
+        &ctx, &saved,"LULU", 2026,
         None,
         Some(201_661), // operating margin 20.17%
     )
@@ -219,8 +221,7 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
 /// and assert against expected micro-unit values when the data is present.
 /// Skips quietly if the company or year is absent (the DB is user-local).
 async fn spot_check_annual(
-    nf: &SqliteNormalizedFactRepo,
-    dm: &SqliteDerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     saved: &[econ_project_lib::domain::Company],
     ticker: &str,
     fiscal_year: i32,
@@ -234,7 +235,7 @@ async fn spot_check_annual(
     let cik = &company.cik;
 
     if let Some(want) = expect_fcf {
-        let fcf = series::revenue_aware_series(nf, dm, cik, Metric::FreeCashFlow, PeriodKind::Annual)
+        let fcf = series::revenue_aware_series(ctx, cik, Metric::FreeCashFlow, PeriodKind::Annual)
             .await
             .unwrap();
         match fcf.iter().find(|p| p.period.fiscal_year == fiscal_year) {
@@ -251,7 +252,7 @@ async fn spot_check_annual(
     }
 
     if let Some(want) = expect_margin {
-        let m = series::revenue_aware_series(nf, dm, cik, Metric::OperatingMargin, PeriodKind::Annual)
+        let m = series::revenue_aware_series(ctx, cik, Metric::OperatingMargin, PeriodKind::Annual)
             .await
             .unwrap();
         match m.iter().find(|p| p.period.fiscal_year == fiscal_year) {

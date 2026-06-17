@@ -10,9 +10,11 @@ use crate::repos::company::SqliteCompanyRepo;
 use crate::repos::derived_metric::SqliteDerivedMetricRepo;
 use crate::repos::filing::SqliteFilingRepo;
 use crate::repos::ingestion_event::SqliteIngestionEventRepo;
+use crate::repos::historical_price::SqliteHistoricalPriceRepo;
 use crate::repos::normalized_fact::SqliteNormalizedFactRepo;
 use crate::repos::period::SqlitePeriodRepo;
 use crate::repos::raw_fact::SqliteRawFactRepo;
+use crate::sources::market_data::YahooMarketData;
 use crate::sources::sec_client::SecClient;
 
 pub struct AppState {
@@ -23,8 +25,10 @@ pub struct AppState {
     pub raw_facts: Arc<SqliteRawFactRepo>,
     pub normalized_facts: Arc<SqliteNormalizedFactRepo>,
     pub derived_metrics: Arc<SqliteDerivedMetricRepo>,
+    pub prices: Arc<SqliteHistoricalPriceRepo>,
     pub events: Arc<SqliteIngestionEventRepo>,
     pub sec: Arc<SecClient>,
+    pub market_data: Arc<YahooMarketData>,
 }
 
 impl AppState {
@@ -44,6 +48,7 @@ impl AppState {
             env!("CARGO_PKG_VERSION"),
         );
         let sec = Arc::new(SecClient::new(user_agent, 5)?);
+        let market_data = Arc::new(YahooMarketData::new()?);
         Ok(AppState {
             companies: Arc::new(SqliteCompanyRepo::new(pool.clone())),
             filings: Arc::new(SqliteFilingRepo::new(pool.clone())),
@@ -51,21 +56,34 @@ impl AppState {
             raw_facts: Arc::new(SqliteRawFactRepo::new(pool.clone())),
             normalized_facts: Arc::new(SqliteNormalizedFactRepo::new(pool.clone())),
             derived_metrics: Arc::new(SqliteDerivedMetricRepo::new(pool.clone())),
+            prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
             events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
             sec,
+            market_data,
             pool,
         })
+    }
+
+    /// Borrowed repository bundle for read-time derived-metric series.
+    pub fn read_ctx(&self) -> crate::derived::series::ReadCtx<'_> {
+        crate::derived::series::ReadCtx {
+            normalized_facts: self.normalized_facts.as_ref(),
+            derived_metrics: self.derived_metrics.as_ref(),
+            prices: self.prices.as_ref(),
+        }
     }
 
     pub fn pipeline_deps(&self) -> IngestionDeps {
         IngestionDeps {
             sec: self.sec.clone(),
+            market_data: self.market_data.clone(),
             companies: self.companies.clone(),
             filings: self.filings.clone(),
             periods: self.periods.clone(),
             raw_facts: self.raw_facts.clone(),
             normalized_facts: self.normalized_facts.clone(),
             derived_metrics: self.derived_metrics.clone(),
+            prices: self.prices.clone(),
             events: self.events.clone(),
         }
     }

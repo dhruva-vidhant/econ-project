@@ -29,6 +29,8 @@ use econ_project_lib::repos::ingestion_event::SqliteIngestionEventRepo;
 use econ_project_lib::repos::normalized_fact::SqliteNormalizedFactRepo;
 use econ_project_lib::repos::period::SqlitePeriodRepo;
 use econ_project_lib::repos::raw_fact::SqliteRawFactRepo;
+use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
+use econ_project_lib::sources::market_data::YahooMarketData;
 use econ_project_lib::sources::sec_client::SecClient;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -42,6 +44,7 @@ async fn lulu_annual_series_has_no_gaps_and_quarters_are_ordered() {
     );
     let deps = IngestionDeps {
         sec,
+        market_data: Arc::new(YahooMarketData::new().unwrap()),
         companies: Arc::new(SqliteCompanyRepo::new(pool.clone())),
         filings: Arc::new(SqliteFilingRepo::new(pool.clone())),
         periods: Arc::new(SqlitePeriodRepo::new(pool.clone())),
@@ -50,6 +53,7 @@ async fn lulu_annual_series_has_no_gaps_and_quarters_are_ordered() {
         derived_metrics: Arc::new(
             econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo::new(pool.clone()),
         ),
+        prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
         events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
     };
 

@@ -408,7 +408,12 @@ pub async fn fetch_companyfacts(client: &SecClient, cik: &Cik) -> Result<Vec<Raw
 **DoD:** Test against checked-in Apple companyfacts fixture; scaling test for USD (×1,000,000), shares (×1), USD/shares (×1,000,000); every fact carries a non-empty `accn`.
 
 #### M17 — MarketDataAdapter trait + Yahoo Finance impl
-**Developer.** Trait + Yahoo Finance default impl using `https://query1.finance.yahoo.com/v8/finance/chart/{ticker}`.
+**Developer.** Trait + `YahooMarketData` default impl using the chart endpoint
+`https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1=&period2=&interval=1d`.
+Parses `chart.result[0].timestamp` × `indicators.quote[0].close`; returns closes
+in USD micro-units (rounded). Enforces a USD `meta.currency` guard (rejects
+foreign listings), maps SEC dots to Yahoo hyphens (`BRK.B`→`BRK-B`), and reuses
+the `SecClient` rate-limit + backoff pattern.
 **Depends on:** M03.
 **Public interface:**
 ```rust
@@ -418,10 +423,19 @@ pub trait MarketDataAdapter: Send + Sync {
         -> Result<Vec<(NaiveDate, Micro)>, SourceError>;
     async fn current_price(&self, ticker: &Ticker) -> Result<Micro, SourceError>;
 }
-pub struct YahooFinanceAdapter { /* ... */ }
-impl MarketDataAdapter for YahooFinanceAdapter { /* ... */ }
+pub struct YahooMarketData { /* reqwest client + rate limiter */ }
+impl MarketDataAdapter for YahooMarketData { /* ... */ }
 ```
-**DoD:** Mock-server tests; price scaling correctness; graceful error on adapter unavailable.
+**DoD:** Envelope-parse, dot→hyphen, USD-guard, and price-scaling unit tests;
+live end-to-end coverage via `integration_market_cap_live` (real Yahoo fetch).
+
+##### M12b — HistoricalPriceRepo
+**Developer.** Persists one EOD close per `(cik, date)` in `historical_price`:
+`upsert` (idempotent, `ON CONFLICT(cik,date)`) and `map_for(cik) -> BTreeMap<date, close>`.
+The ingestion price stage (M22) writes one row per distinct period end-date,
+resolved to the nearest prior trading day; the read path looks closes up by
+`period.end_date` to derive market cap. Wired into the company `drop_cache`
+cascade. **DoD:** upsert/refresh + map round-trip; covered by the live test.
 
 ---
 
@@ -541,7 +555,7 @@ pub async fn ingest_company(
 **Developer.** Two persistence styles:
 
 - **Persisted at ingest, written to `derived_metric`:** `historical_market_cap_v1`, `bank_revenue_v1` (steps 3–4 of architecture §8.1, run only when no direct `Revenue` exists for the period; positivity-guarded).
-- **Read-time only, computed from `normalized_fact` rows:** `total_debt_v1`, `gross_profit_v1`, `capital_expenditures_v1` (the PP&E-roll-forward fallback `ΔPP&E_net + D&A`, used when no explicit cash-flow CapEx is tagged), `free_cash_flow_v1` (`net_income + depreciation_amortization − capital_expenditures`; all three inputs required), and `operating_margin_v1` (`operating_income ÷ revenue`, stored as a ratio ×1e6; omitted when revenue ≤ 0). Read-time avoids stale-cache hazards when an input is superseded. The pure formulas live in `derived` (unit-tested); the per-period series assembly lives in `derived::series`, parameterized over the repository traits so IPC and integration tests share one path.
+- **Read-time only, computed from `normalized_fact` (and `historical_price`) rows:** `total_debt_v1`, `gross_profit_v1`, `capital_expenditures_v1` (the PP&E-roll-forward fallback `ΔPP&E_net + D&A`, used when no explicit cash-flow CapEx is tagged), `free_cash_flow_v1` (`net_income + depreciation_amortization − capital_expenditures`; all three inputs required), `operating_margin_v1` (`operating_income ÷ revenue`, ratio ×1e6; omitted when revenue ≤ 0), `free_cash_flow_ttm_v1` (trailing-4-quarter sum of FCF, strictly-consecutive quarters; annual = annual FCF), `historical_market_cap_v1` (`close(period end) × shares_outstanding_basic`; the close is the only persisted input, in `historical_price`), and `free_cash_flow_yield_v1` (`FCF ÷ market cap`, ratio ×1e6; annual FCF or quarterly TTM; omitted when market cap ≤ 0). Read-time avoids stale-cache hazards when an input is superseded. The pure formulas live in `derived` (unit-tested); the per-period series assembly lives in `derived::series`, parameterized over a `ReadCtx` of repository traits (`NormalizedFactRepo`/`DerivedMetricRepo`/`HistoricalPriceRepo`) so IPC and integration tests share one path.
 - **Live-only, never persisted:** `current_market_cap_v1`.
 
 > **Note (revision).** An earlier draft listed `fcf_v1` as *persisted at ingest*. Free cash flow moved to the **read-time** family alongside `total_debt`/`gross_profit`/`capital_expenditures` for the same reason: a persisted sum goes stale when any of net income, depreciation & amortization, or capital expenditures is superseded by a later filing. `operating_margin_v1` was added in the same revision (PRD FR-033).

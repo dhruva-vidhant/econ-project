@@ -7,6 +7,7 @@ import {
   isRatioMetric,
   microToPercent,
   microToUsd,
+  prettyMetric,
 } from "@/api/types";
 
 describe("fmtUsdCompact", () => {
@@ -31,10 +32,24 @@ describe("microToUsd", () => {
 });
 
 describe("ratio metrics", () => {
-  it("classifies operating_margin as a ratio, monetary metrics as not", () => {
+  it("classifies operating_margin and free_cash_flow_yield as ratios", () => {
     expect(isRatioMetric("operating_margin")).toBe(true);
+    expect(isRatioMetric("free_cash_flow_yield")).toBe(true);
     expect(isRatioMetric("free_cash_flow")).toBe(false);
+    expect(isRatioMetric("historical_market_cap")).toBe(false);
     expect(isRatioMetric("revenue")).toBe(false);
+  });
+
+  it("labels valuation metrics readably", () => {
+    expect(prettyMetric("free_cash_flow_yield")).toBe("Free Cash Flow Yield");
+    expect(prettyMetric("free_cash_flow_ttm")).toBe("Free Cash Flow (TTM)");
+    expect(prettyMetric("historical_market_cap")).toBe("Market Cap");
+    expect(prettyMetric("net_income")).toBe("Net Income");
+  });
+
+  it("formats free_cash_flow_yield as a percentage", () => {
+    expect(fmtMetricValue("free_cash_flow_yield", 40_000)).toBe("4.0%");
+    expect(fmtMetricValue("historical_market_cap", 3_000_000_000_000 * 1_000_000)).toBe("$3.00T");
   });
 
   it("microToPercent converts ratio micro-units to a percentage number", () => {

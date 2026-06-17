@@ -77,6 +77,9 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         //   operating_margin = operating_income ÷ revenue
         Metric::FreeCashFlow => &[],
         Metric::OperatingMargin => &[],
+        // Trailing-twelve-month FCF, FCF yield: derived at read time (no source concept).
+        Metric::FreeCashFlowTtm => &[],
+        Metric::FreeCashFlowYield => &[],
         Metric::TotalAssets => &[("us-gaap", "Assets")],
         Metric::TotalLiabilities => &[("us-gaap", "Liabilities")],
         Metric::TotalEquity => &[

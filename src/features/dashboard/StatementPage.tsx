@@ -18,6 +18,9 @@ const STATEMENT_METRICS: Record<string, string[]> = {
     "cash_from_operations", "capital_expenditures", "depreciation_amortization",
     "free_cash_flow",
   ],
+  valuation: [
+    "historical_market_cap", "free_cash_flow_ttm", "free_cash_flow_yield",
+  ],
 };
 
 export default function StatementPage() {
@@ -37,7 +40,7 @@ export default function StatementPage() {
         <span className="font-semibold capitalize">{stmtKind} statement</span>
         <div className="ml-auto inline-flex gap-2">
           <div className="inline-flex rounded border border-border/60 text-xs">
-            {(["income", "balance", "cashflow"] as const).map((k) => (
+            {(["income", "balance", "cashflow", "valuation"] as const).map((k) => (
               <button
                 key={k}
                 onClick={() => nav(`/c/${ticker}/statement/${k}`)}

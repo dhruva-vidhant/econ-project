@@ -96,7 +96,7 @@ export default function CompanyDashboardPage() {
               ))}
             </div>
             <div className="ml-auto inline-flex rounded border border-border/60 text-xs">
-              {(["income", "balance", "cashflow"] as const).map((k) => (
+              {(["income", "balance", "cashflow", "valuation"] as const).map((k) => (
                 <Link
                   key={k}
                   to={`/c/${ticker}/statement/${k}`}

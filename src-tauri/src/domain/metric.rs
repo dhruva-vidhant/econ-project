@@ -41,6 +41,12 @@ pub enum Metric {
     //   operating_margin = operating_income ÷ revenue (decimal ratio, ×1e6 per §6.2)
     FreeCashFlow,
     OperatingMargin,
+    // Trailing-twelve-month free cash flow (quarterly: sum of the trailing
+    // 4 quarters). Annual periods reuse the plain annual free_cash_flow.
+    FreeCashFlowTtm,
+    // Free cash flow yield = free_cash_flow ÷ market cap (decimal ratio ×1e6).
+    // Annual uses annual FCF; quarterly uses trailing-twelve-month FCF.
+    FreeCashFlowYield,
     // Market (derived)
     HistoricalMarketCap,
     CurrentMarketCap,
@@ -75,6 +81,8 @@ impl Metric {
             Metric::InterestExpense => "interest_expense",
             Metric::FreeCashFlow => "free_cash_flow",
             Metric::OperatingMargin => "operating_margin",
+            Metric::FreeCashFlowTtm => "free_cash_flow_ttm",
+            Metric::FreeCashFlowYield => "free_cash_flow_yield",
             Metric::HistoricalMarketCap => "historical_market_cap",
             Metric::CurrentMarketCap => "current_market_cap",
         }
@@ -108,6 +116,8 @@ impl Metric {
             "interest_expense" => Metric::InterestExpense,
             "free_cash_flow" => Metric::FreeCashFlow,
             "operating_margin" => Metric::OperatingMargin,
+            "free_cash_flow_ttm" => Metric::FreeCashFlowTtm,
+            "free_cash_flow_yield" => Metric::FreeCashFlowYield,
             "historical_market_cap" => Metric::HistoricalMarketCap,
             "current_market_cap" => Metric::CurrentMarketCap,
             _ => return None,
@@ -127,6 +137,7 @@ impl Metric {
         Metric::NetInterestIncome, Metric::NoninterestIncome,
         Metric::InterestIncomeOperating, Metric::InterestExpense,
         Metric::FreeCashFlow, Metric::OperatingMargin,
+        Metric::FreeCashFlowTtm, Metric::FreeCashFlowYield,
         Metric::HistoricalMarketCap, Metric::CurrentMarketCap,
     ];
 

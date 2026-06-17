@@ -28,6 +28,8 @@ use econ_project_lib::repos::ingestion_event::SqliteIngestionEventRepo;
 use econ_project_lib::repos::normalized_fact::SqliteNormalizedFactRepo;
 use econ_project_lib::repos::period::SqlitePeriodRepo;
 use econ_project_lib::repos::raw_fact::SqliteRawFactRepo;
+use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
+use econ_project_lib::sources::market_data::YahooMarketData;
 use econ_project_lib::sources::sec_client::SecClient;
 
 #[tokio::test]
@@ -61,12 +63,14 @@ async fn refresh_saved_companies_in_production_db() {
     );
     let deps = IngestionDeps {
         sec,
+        market_data: Arc::new(YahooMarketData::new().unwrap()),
         companies: Arc::new(SqliteCompanyRepo::new(pool.clone())),
         filings: Arc::new(SqliteFilingRepo::new(pool.clone())),
         periods: Arc::new(SqlitePeriodRepo::new(pool.clone())),
         raw_facts: Arc::new(SqliteRawFactRepo::new(pool.clone())),
         normalized_facts: Arc::new(SqliteNormalizedFactRepo::new(pool.clone())),
         derived_metrics: Arc::new(SqliteDerivedMetricRepo::new(pool.clone())),
+        prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
         events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
     };
 

@@ -5,12 +5,12 @@
 //! are **read-time** rather than persisted: a stale input that has since been
 //! superseded would otherwise leave a persisted sum out of sync with its
 //! inputs (architecture §6.2). The same strategy is used for `total_debt`,
-//! `gross_profit`, and the `capital_expenditures` PP&E roll-forward.
+//! `gross_profit`, the `capital_expenditures` PP&E roll-forward, free cash
+//! flow, operating margin, market cap, and free-cash-flow yield.
 //!
-//! The functions are parameterized over the [`NormalizedFactRepo`] and
-//! [`DerivedMetricRepo`] traits (not the concrete `AppState`) so the IPC
-//! handlers and the production-mode integration tests exercise the exact same
-//! code path.
+//! The functions take a [`ReadCtx`] of repository trait objects (not the
+//! concrete `AppState`) so the IPC handlers and the production-mode
+//! integration tests exercise the exact same code path.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -19,11 +19,21 @@ use serde::Serialize;
 use crate::domain::{Cik, Metric, Period, PeriodKind};
 use crate::errors::AppError;
 use crate::repos::derived_metric::DerivedMetricRepo;
+use crate::repos::historical_price::HistoricalPriceRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
+
+/// Repositories the read-time derivations draw on. Borrowed trait objects so
+/// callers pass `&SqliteX` (which coerces) and tests can substitute fakes.
+pub struct ReadCtx<'a> {
+    pub normalized_facts: &'a dyn NormalizedFactRepo,
+    pub derived_metrics: &'a dyn DerivedMetricRepo,
+    pub prices: &'a dyn HistoricalPriceRepo,
+}
 
 /// One point in a metric's time series, as returned over IPC. For monetary
 /// metrics `value` is micro-units (USD × 1e6); for ratio metrics
-/// (`operating_margin`) it is the decimal ratio × 1e6 (see architecture §6.2).
+/// (`operating_margin`, `free_cash_flow_yield`) it is the decimal ratio × 1e6
+/// (see architecture §6.2).
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricSeriesPoint {
     pub period: Period,
@@ -34,35 +44,37 @@ pub struct MetricSeriesPoint {
     pub normalized_fact_id: i64,
 }
 
+fn derived_point(period: Period, value: i64) -> MetricSeriesPoint {
+    MetricSeriesPoint { period, value, source_kind: "derived".into(), normalized_fact_id: -1 }
+}
+
 /// `current_series` with read-time derivations layered on top. Other metrics
 /// pass through unchanged. Result is sorted by `period.end_date` (the true
 /// period close; monotonic for both annual and quarterly series even when a
 /// derived quarter's `start_date` is the fiscal-year start).
 ///
-/// Derivations:
-/// - **Revenue**: fills missing periods from `bank_revenue_v1` derived rows.
-/// - **TotalDebt**: `LongTermDebt + CurrentDebt` per period.
-/// - **GrossProfit**: `Revenue − CostOfRevenue` when no direct value exists.
-/// - **CapitalExpenditures**: PP&E roll-forward fallback when not directly tagged.
-/// - **FreeCashFlow**: `NetIncome + DepreciationAmortization − CapitalExpenditures`.
-/// - **OperatingMargin**: `OperatingIncome ÷ Revenue` (decimal ratio × 1e6).
+/// Derivations: Revenue (bank fallback), TotalDebt, GrossProfit,
+/// CapitalExpenditures, FreeCashFlow, OperatingMargin, FreeCashFlowTtm,
+/// HistoricalMarketCap, FreeCashFlowYield.
 pub async fn revenue_aware_series(
-    nf: &dyn NormalizedFactRepo,
-    dm: &dyn DerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     metric: Metric,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
     match metric {
-        Metric::TotalDebt => return total_debt_series(nf, cik, kind).await,
-        Metric::GrossProfit => return gross_profit_series(nf, dm, cik, kind).await,
-        Metric::CapitalExpenditures => return capital_expenditures_series(nf, cik, kind).await,
-        Metric::FreeCashFlow => return free_cash_flow_series(nf, dm, cik, kind).await,
-        Metric::OperatingMargin => return operating_margin_series(nf, dm, cik, kind).await,
+        Metric::TotalDebt => return total_debt_series(ctx, cik, kind).await,
+        Metric::GrossProfit => return gross_profit_series(ctx, cik, kind).await,
+        Metric::CapitalExpenditures => return capital_expenditures_series(ctx, cik, kind).await,
+        Metric::FreeCashFlow => return free_cash_flow_series(ctx, cik, kind).await,
+        Metric::OperatingMargin => return operating_margin_series(ctx, cik, kind).await,
+        Metric::FreeCashFlowTtm => return free_cash_flow_ttm_series(ctx, cik, kind).await,
+        Metric::HistoricalMarketCap => return historical_market_cap_series(ctx, cik, kind).await,
+        Metric::FreeCashFlowYield => return free_cash_flow_yield_series(ctx, cik, kind).await,
         _ => {}
     }
 
-    let direct = nf.current_series(cik, metric, kind.clone()).await?;
+    let direct = ctx.normalized_facts.current_series(cik, metric, kind.clone()).await?;
     let mut out: Vec<MetricSeriesPoint> = direct
         .into_iter()
         .map(|(p, n)| MetricSeriesPoint {
@@ -75,21 +87,14 @@ pub async fn revenue_aware_series(
 
     if matches!(metric, Metric::Revenue) {
         let covered: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
-        let derived = dm.series(cik, "bank_revenue_v1", kind).await?;
+        let derived = ctx.derived_metrics.series(cik, "bank_revenue_v1", kind).await?;
         for (period, d) in derived {
             if covered.contains(&period.id) {
                 continue;
             }
             if let Some(value) = d.value {
-                out.push(MetricSeriesPoint {
-                    period,
-                    value,
-                    source_kind: "derived".into(),
-                    // Sentinel: derived rows have no underlying single
-                    // normalized_fact id. See followup.md for richer
-                    // derivation lineage.
-                    normalized_fact_id: -1,
-                });
+                // Sentinel id: derived rows have no single normalized_fact.
+                out.push(derived_point(period, value));
             }
         }
         out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
@@ -98,18 +103,13 @@ pub async fn revenue_aware_series(
 }
 
 /// Gross profit is `Revenue − CostOfRevenue` per period, but only when no
-/// directly-filed `GrossProfit` fact is present. Companies that file
-/// GrossProfit directly keep their authoritative value; those that don't
-/// (banks, some service-only filers) get the derived value when both Revenue
-/// and CostOfRevenue are available.
+/// directly-filed `GrossProfit` fact is present.
 async fn gross_profit_series(
-    nf: &dyn NormalizedFactRepo,
-    dm: &dyn DerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    // Direct GrossProfit facts win when present.
-    let direct = nf.current_series(cik, Metric::GrossProfit, kind.clone()).await?;
+    let direct = ctx.normalized_facts.current_series(cik, Metric::GrossProfit, kind.clone()).await?;
     let mut out: Vec<MetricSeriesPoint> = direct
         .into_iter()
         .map(|(p, n)| MetricSeriesPoint {
@@ -121,10 +121,9 @@ async fn gross_profit_series(
         .collect();
     let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
 
-    // For periods without a direct fact: derive Revenue − CostOfRevenue.
     // Box::pin the recursive call so the future has a known size.
-    let rev = Box::pin(revenue_aware_series(nf, dm, cik, Metric::Revenue, kind.clone())).await?;
-    let cor = nf.current_series(cik, Metric::CostOfRevenue, kind).await?;
+    let rev = Box::pin(revenue_aware_series(ctx, cik, Metric::Revenue, kind.clone())).await?;
+    let cor = ctx.normalized_facts.current_series(cik, Metric::CostOfRevenue, kind).await?;
 
     let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
     for p in rev {
@@ -142,31 +141,24 @@ async fn gross_profit_series(
 
     for (_, (period, rev_v, cor_v)) in by_pid {
         if let (Some(r), Some(c)) = (rev_v, cor_v) {
-            out.push(MetricSeriesPoint {
-                period,
-                value: r.saturating_sub(c),
-                source_kind: "derived".into(),
-                normalized_fact_id: -1,
-            });
+            out.push(derived_point(period, r.saturating_sub(c)));
         }
     }
     out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
 }
 
-/// Total debt is `LongTermDebt + CurrentDebt`, per-period. We join the two
-/// component series by `period.id`; if a period has at least one component, we
-/// emit a row (treating the missing one as 0). If neither component is present,
-/// no row is emitted.
+/// Total debt is `LongTermDebt + CurrentDebt`, per-period. A period with at
+/// least one component emits a row (missing component treated as 0); a period
+/// with neither emits nothing.
 async fn total_debt_series(
-    nf: &dyn NormalizedFactRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    let lt = nf.current_series(cik, Metric::LongTermDebt, kind.clone()).await?;
-    let cd = nf.current_series(cik, Metric::CurrentDebt, kind).await?;
+    let lt = ctx.normalized_facts.current_series(cik, Metric::LongTermDebt, kind.clone()).await?;
+    let cd = ctx.normalized_facts.current_series(cik, Metric::CurrentDebt, kind).await?;
 
-    // Key by period.id so we can sum components without losing the period record.
     let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
     for (p, n) in lt {
         by_pid.entry(p.id).or_insert((p, None, None)).1 = Some(n.value);
@@ -177,11 +169,8 @@ async fn total_debt_series(
 
     let mut out: Vec<MetricSeriesPoint> = by_pid
         .into_values()
-        .map(|(period, lt_v, cd_v)| MetricSeriesPoint {
-            period,
-            value: lt_v.unwrap_or(0).saturating_add(cd_v.unwrap_or(0)),
-            source_kind: "derived".into(),
-            normalized_fact_id: -1,
+        .map(|(period, lt_v, cd_v)| {
+            derived_point(period, lt_v.unwrap_or(0).saturating_add(cd_v.unwrap_or(0)))
         })
         .collect();
     out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
@@ -191,29 +180,16 @@ async fn total_debt_series(
 /// Capital expenditures, with read-time derivation for periods where the filer
 /// didn't report `PaymentsToAcquirePropertyPlantAndEquipment`.
 ///
-/// Formula:
-///   `CapEx(t) ≈ PP&E_Net(end of t) − PP&E_Net(end of prior period) + DepreciationAndAmortization(t)`
-///
-/// This is the standard reconstruction from the balance roll-forward identity
-///   `PP&E_Net(end) = PP&E_Net(begin) + Additions − Depreciation − Disposals`
-/// solving for Additions and ignoring disposals (unobservable from these
-/// inputs). For filers with significant asset disposals the derived value is
-/// an upper bound on capital expenditures.
-///
-/// Behavior:
-/// - Periods with a directly-filed value pass through unchanged.
-/// - Periods missing a direct value are derived if all three inputs are
-///   available: PP&E_Net at the period's end_date, PP&E_Net at the most recent
-///   earlier observation, and DepreciationAndAmortization for the period.
-/// - Non-positive derivations (more disposals than purchases — implausible for
-///   a positive-only metric) are skipped per the project accuracy rule.
+/// `CapEx(t) ≈ PP&E_Net(end t) − PP&E_Net(prior) + DepreciationAndAmortization(t)`,
+/// the balance roll-forward solved for additions (disposals unobservable, so
+/// the derived value is an upper bound). Direct values pass through; non-positive
+/// derivations are skipped (positive-only metric).
 async fn capital_expenditures_series(
-    nf: &dyn NormalizedFactRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    // Direct values win.
-    let direct = nf.current_series(cik, Metric::CapitalExpenditures, kind.clone()).await?;
+    let direct = ctx.normalized_facts.current_series(cik, Metric::CapitalExpenditures, kind.clone()).await?;
     let mut out: Vec<MetricSeriesPoint> = direct
         .into_iter()
         .map(|(p, n)| MetricSeriesPoint {
@@ -225,13 +201,14 @@ async fn capital_expenditures_series(
         .collect();
     let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
 
-    // PP&E net is an instant. Q4 / FY observations attach to the annual period;
-    // Q1–Q3 attach to quarterly periods. To find the right "prior" balance for
-    // any period, gather every observation across both kinds and key by end_date.
-    let ppne_a = nf
+    // PP&E net is an instant; gather across both kinds keyed by end_date so any
+    // period can find its closing and most-recent-prior balance.
+    let ppne_a = ctx
+        .normalized_facts
         .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Annual)
         .await?;
-    let ppne_q = nf
+    let ppne_q = ctx
+        .normalized_facts
         .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Quarterly)
         .await?;
     let mut ppne_by_end: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
@@ -239,10 +216,7 @@ async fn capital_expenditures_series(
         ppne_by_end.insert(p.end_date, n.value);
     }
 
-    // DepreciationAndAmortization for the requested kind drives candidate
-    // periods: we can only derive a period that has a depreciation value and a
-    // closing PP&E observation matching its end_date.
-    let da = nf.current_series(cik, Metric::DepreciationAmortization, kind).await?;
+    let da = ctx.normalized_facts.current_series(cik, Metric::DepreciationAmortization, kind).await?;
 
     for (period, da_n) in da {
         if direct_periods.contains(&period.id) {
@@ -255,44 +229,30 @@ async fn capital_expenditures_series(
             continue;
         };
         let value = ppne_end.saturating_sub(ppne_start).saturating_add(da_n.value);
-        // Capital expenditures is positive-only; skip implausible results.
         if value <= 0 {
             continue;
         }
-        out.push(MetricSeriesPoint {
-            period,
-            value,
-            source_kind: "derived".into(),
-            normalized_fact_id: -1,
-        });
+        out.push(derived_point(period, value));
     }
     out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
 }
 
 /// Free cash flow `= NetIncome + DepreciationAmortization − CapitalExpenditures`
-/// per period (architecture §6.2 / PRD FR-032). Capital expenditures uses the
-/// full read-time series, so the PP&E roll-forward fallback flows through for
-/// filers that don't tag cash-flow CapEx directly.
-///
-/// All three inputs are required for a period: free cash flow has three terms,
-/// and substituting a missing term with zero would silently misstate it, so an
-/// incomplete period is omitted rather than reported inaccurately.
+/// per period (PRD FR-032). Capital expenditures uses the full read-time series
+/// (PP&E fallback flows through). All three inputs are required for a period.
 async fn free_cash_flow_series(
-    nf: &dyn NormalizedFactRepo,
-    dm: &dyn DerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    let net_income = nf.current_series(cik, Metric::NetIncome, kind.clone()).await?;
-    let dep_amort = nf
+    let net_income = ctx.normalized_facts.current_series(cik, Metric::NetIncome, kind.clone()).await?;
+    let dep_amort = ctx
+        .normalized_facts
         .current_series(cik, Metric::DepreciationAmortization, kind.clone())
         .await?;
-    // CapEx via the read-time series so the bank/PP&E fallback applies.
-    let capex =
-        Box::pin(revenue_aware_series(nf, dm, cik, Metric::CapitalExpenditures, kind)).await?;
+    let capex = Box::pin(revenue_aware_series(ctx, cik, Metric::CapitalExpenditures, kind)).await?;
 
-    // (period, net_income?, dep_amort?, capex?)
     let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>, Option<i64>)> = BTreeMap::new();
     for (p, n) in net_income {
         by_pid.entry(p.id).or_insert((p, None, None, None)).1 = Some(n.value);
@@ -310,12 +270,9 @@ async fn free_cash_flow_series(
     let mut out: Vec<MetricSeriesPoint> = by_pid
         .into_values()
         .filter_map(|(period, ni, da, cx)| match (ni, da, cx) {
-            (Some(ni), Some(da), Some(cx)) => Some(MetricSeriesPoint {
-                period,
-                value: super::free_cash_flow(ni, da, cx),
-                source_kind: "derived".into(),
-                normalized_fact_id: -1,
-            }),
+            (Some(ni), Some(da), Some(cx)) => {
+                Some(derived_point(period, super::free_cash_flow(ni, da, cx)))
+            }
             _ => None,
         })
         .collect();
@@ -323,21 +280,17 @@ async fn free_cash_flow_series(
     Ok(out)
 }
 
-/// Operating margin `= OperatingIncome ÷ Revenue`, per period, returned as a
-/// decimal ratio × 1e6 (architecture §6.2). Revenue uses the read-time series
-/// so the bank-revenue fallback applies. Both inputs are required; periods with
-/// non-positive revenue are omitted (margin undefined — see
-/// [`super::operating_margin_micro`]).
+/// Operating margin `= OperatingIncome ÷ Revenue` (decimal ratio × 1e6).
+/// Revenue uses the read-time series (bank fallback). Both inputs required;
+/// non-positive revenue is omitted (margin undefined).
 async fn operating_margin_series(
-    nf: &dyn NormalizedFactRepo,
-    dm: &dyn DerivedMetricRepo,
+    ctx: &ReadCtx<'_>,
     cik: &Cik,
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
-    let op_inc = nf.current_series(cik, Metric::OperatingIncome, kind.clone()).await?;
-    let revenue = Box::pin(revenue_aware_series(nf, dm, cik, Metric::Revenue, kind)).await?;
+    let op_inc = ctx.normalized_facts.current_series(cik, Metric::OperatingIncome, kind.clone()).await?;
+    let revenue = Box::pin(revenue_aware_series(ctx, cik, Metric::Revenue, kind)).await?;
 
-    // (period, operating_income?, revenue?)
     let mut by_pid: BTreeMap<i64, (Period, Option<i64>, Option<i64>)> = BTreeMap::new();
     for (p, n) in op_inc {
         by_pid.entry(p.id).or_insert((p, None, None)).1 = Some(n.value);
@@ -352,15 +305,112 @@ async fn operating_margin_series(
     let mut out: Vec<MetricSeriesPoint> = by_pid
         .into_values()
         .filter_map(|(period, oi, rev)| match (oi, rev) {
-            (Some(oi), Some(rev)) => super::operating_margin_micro(oi, rev).map(|value| {
-                MetricSeriesPoint {
-                    period,
-                    value,
-                    source_kind: "derived".into(),
-                    normalized_fact_id: -1,
-                }
-            }),
+            (Some(oi), Some(rev)) => {
+                super::operating_margin_micro(oi, rev).map(|v| derived_point(period, v))
+            }
             _ => None,
+        })
+        .collect();
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
+    Ok(out)
+}
+
+/// A monotonic quarter index for continuity checks: `fiscal_year*4 + (q-1)`.
+fn quarter_index(p: &Period) -> i64 {
+    p.fiscal_year as i64 * 4 + (p.fiscal_quarter as i64 - 1)
+}
+
+/// Trailing-twelve-month free cash flow.
+///
+/// - **Annual**: a fiscal year already spans twelve months, so this is the
+///   plain annual `free_cash_flow` series (relabeled).
+/// - **Quarterly**: the sum of each quarter and its three predecessors, emitted
+///   at the most recent quarter. A window is emitted only when the four
+///   quarters are strictly consecutive (no gap and no fiscal-calendar break),
+///   so an incomplete trailing year is omitted rather than understated.
+async fn free_cash_flow_ttm_series(
+    ctx: &ReadCtx<'_>,
+    cik: &Cik,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    let fcf = Box::pin(revenue_aware_series(ctx, cik, Metric::FreeCashFlow, kind.clone())).await?;
+    if matches!(kind, PeriodKind::Annual) {
+        // Already a 12-month figure; just re-tag the points.
+        return Ok(fcf
+            .into_iter()
+            .map(|p| derived_point(p.period, p.value))
+            .collect());
+    }
+
+    // Quarterly: rolling 4-quarter sum over the end_date-sorted series.
+    let mut out = Vec::new();
+    for i in 3..fcf.len() {
+        let window = &fcf[i - 3..=i];
+        // Strictly consecutive fiscal quarters: newest index − oldest == 3.
+        if quarter_index(&window[3].period) - quarter_index(&window[0].period) != 3 {
+            continue;
+        }
+        let sum: i64 = window.iter().fold(0i64, |acc, p| acc.saturating_add(p.value));
+        out.push(derived_point(window[3].period.clone(), sum));
+    }
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
+    Ok(out)
+}
+
+/// Historical market cap `= close_price(period end) × shares_outstanding_basic`,
+/// a per-period instant. The close comes from `historical_price` keyed by the
+/// period's `end_date` (resolved to the nearest prior trading day at ingest);
+/// shares come from the period's current basic-shares fact. Both required.
+async fn historical_market_cap_series(
+    ctx: &ReadCtx<'_>,
+    cik: &Cik,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    let shares = ctx
+        .normalized_facts
+        .current_series(cik, Metric::SharesOutstandingBasic, kind)
+        .await?;
+    let prices = ctx.prices.map_for(cik).await?;
+
+    let mut out: Vec<MetricSeriesPoint> = shares
+        .into_iter()
+        .filter_map(|(period, n)| {
+            prices
+                .get(&period.end_date)
+                .map(|&close| derived_point(period, super::market_cap(close, n.value)))
+        })
+        .collect();
+    out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
+    Ok(out)
+}
+
+/// Free cash flow yield `= FCF ÷ market cap` (decimal ratio × 1e6).
+/// Annual uses annual FCF; quarterly uses trailing-twelve-month FCF. Both the
+/// numerator and the market cap are required; a non-positive market cap is
+/// omitted (yield undefined).
+async fn free_cash_flow_yield_series(
+    ctx: &ReadCtx<'_>,
+    cik: &Cik,
+    kind: PeriodKind,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    // Numerator: annual FCF, or TTM FCF for quarterly.
+    let numerator = match kind {
+        PeriodKind::Annual => {
+            Box::pin(revenue_aware_series(ctx, cik, Metric::FreeCashFlow, kind.clone())).await?
+        }
+        PeriodKind::Quarterly => {
+            Box::pin(free_cash_flow_ttm_series(ctx, cik, kind.clone())).await?
+        }
+    };
+    let mcap = Box::pin(historical_market_cap_series(ctx, cik, kind)).await?;
+    let mcap_by_pid: BTreeMap<i64, i64> =
+        mcap.into_iter().map(|p| (p.period.id, p.value)).collect();
+
+    let mut out: Vec<MetricSeriesPoint> = numerator
+        .into_iter()
+        .filter_map(|p| {
+            let mc = mcap_by_pid.get(&p.period.id)?;
+            super::fcf_yield_micro(p.value, *mc).map(|v| derived_point(p.period, v))
         })
         .collect();
     out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));

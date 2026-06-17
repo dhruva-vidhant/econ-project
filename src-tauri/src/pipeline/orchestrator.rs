@@ -15,10 +15,12 @@ use crate::normalize::{concept_map, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
 use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
+use crate::repos::historical_price::HistoricalPriceRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
 use crate::repos::period::PeriodRepo;
 use crate::repos::raw_fact::RawFactRepo;
+use crate::sources::market_data::MarketDataAdapter;
 use crate::sources::{companyfacts, sec_client::SecClient, submissions, tickers::TickerMap};
 
 #[derive(Clone, Debug, Serialize)]
@@ -34,12 +36,14 @@ pub struct IngestionSummary {
 
 pub struct IngestionDeps {
     pub sec: Arc<SecClient>,
+    pub market_data: Arc<dyn MarketDataAdapter>,
     pub companies: Arc<dyn CompanyRepo>,
     pub filings: Arc<dyn FilingRepo>,
     pub periods: Arc<dyn PeriodRepo>,
     pub raw_facts: Arc<dyn RawFactRepo>,
     pub normalized_facts: Arc<dyn NormalizedFactRepo>,
     pub derived_metrics: Arc<dyn DerivedMetricRepo>,
+    pub prices: Arc<dyn HistoricalPriceRepo>,
     pub events: Arc<dyn IngestionEventRepo>,
 }
 
@@ -317,8 +321,14 @@ pub async fn ingest_company(
     //   4. (InterestIncomeOperating - InterestExpense) + NoninterestIncome
     let derived_revenue_count = derive_bank_revenue(deps, &cik, &mut events).await?;
 
+    // ── Market-data enrichment ──────────────────────────────────────────
+    // Fetch end-of-day closes for each period end-date so market cap and
+    // FCF yield can be derived at read time. Best-effort: a price-source
+    // failure is recorded but does not fail ingestion.
+    let prices_ingested = fetch_prices(deps, &cik, ticker, &mut events).await?;
+
     record_event(deps, &cik, None, "persist", Severity::Info, false,
-        format!("Ingestion complete: {filings_ingested} filings, {raw_facts_ingested} raw facts, {normalized_count} normalized facts, {derived_revenue_count} bank-revenue derivations."),
+        format!("Ingestion complete: {filings_ingested} filings, {raw_facts_ingested} raw facts, {normalized_count} normalized facts, {derived_revenue_count} bank-revenue derivations, {prices_ingested} price points."),
         &mut events).await?;
 
     deps.companies.touch_refreshed(&cik).await?;
@@ -332,6 +342,62 @@ pub async fn ingest_company(
         events_recorded: events,
     };
     Ok((company, summary))
+}
+
+/// Fetch end-of-day closes for each distinct period end-date and persist one
+/// `historical_price` row per date, resolved to the nearest prior trading day
+/// (so a fiscal close that lands on a weekend or holiday still gets a price).
+///
+/// Price enrichment is **best-effort**: a market-data failure (offline,
+/// rate-limited, non-USD listing, unknown symbol) is recorded as a
+/// user-visible warning and returns 0 — financial facts are already
+/// persisted, and market cap / FCF yield simply remain absent until a later
+/// refresh succeeds.
+async fn fetch_prices(
+    deps: &IngestionDeps,
+    cik: &Cik,
+    ticker: &Ticker,
+    events: &mut usize,
+) -> Result<usize, PipelineError> {
+    use std::collections::BTreeMap;
+
+    let periods = deps.periods.list_for_cik(cik, None).await?;
+    let mut end_dates: Vec<NaiveDate> = periods.iter().map(|p| p.end_date).collect();
+    end_dates.sort_unstable();
+    end_dates.dedup();
+    let (Some(&first), Some(&last)) = (end_dates.first(), end_dates.last()) else {
+        return Ok(0);
+    };
+    // Reach back a week so the earliest period end can resolve to a prior
+    // trading day even if it fell on a weekend/holiday.
+    let from = first - chrono::Duration::days(7);
+
+    let daily = match deps.market_data.historical_prices(ticker, from, last).await {
+        Ok(d) => d,
+        Err(e) => {
+            record_event(deps, cik, None, "prices", Severity::Warn, true,
+                format!("Price history unavailable ({e}); market cap and FCF yield will be absent."),
+                events).await?;
+            return Ok(0);
+        }
+    };
+    let by_date: BTreeMap<NaiveDate, i64> = daily.into_iter().collect();
+    if by_date.is_empty() {
+        return Ok(0);
+    }
+
+    let mut written = 0usize;
+    for end in end_dates {
+        // Nearest close on-or-before the period end (weekend/holiday-safe).
+        if let Some((_, &close)) = by_date.range(..=end).next_back() {
+            deps.prices.upsert(cik, end, &ticker.0, close, "yahoo").await?;
+            written += 1;
+        }
+    }
+    record_event(deps, cik, None, "prices", Severity::Info, false,
+        format!("Fetched {written} end-of-day closes for market-cap derivation."),
+        events).await?;
+    Ok(written)
 }
 
 fn apply_sign(metric: Metric, value: i64) -> i64 {

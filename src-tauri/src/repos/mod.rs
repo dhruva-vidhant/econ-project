@@ -6,4 +6,5 @@ pub mod period;
 pub mod raw_fact;
 pub mod normalized_fact;
 pub mod derived_metric;
+pub mod historical_price;
 pub mod ingestion_event;

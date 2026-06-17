@@ -62,14 +62,8 @@ pub async fn get_metric_history(
         .ok_or_else(|| AppError::invalid(format!("unknown metric: {metric}")))?;
     let kind = PeriodKind::from_str(&kind)
         .ok_or_else(|| AppError::invalid(format!("unknown period kind: {kind}")))?;
-    series::revenue_aware_series(
-        state.normalized_facts.as_ref(),
-        state.derived_metrics.as_ref(),
-        &cik,
-        metric,
-        kind,
-    )
-    .await
+    let ctx = state.read_ctx();
+    series::revenue_aware_series(&ctx, &cik, metric, kind).await
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,24 +91,21 @@ pub async fn get_dashboard(
         .get_by_cik(&cik)
         .await?
         .ok_or_else(|| AppError::not_found(format!("company {cik} not found")))?;
+    let ctx = state.read_ctx();
     let mut widgets = Vec::new();
     for metric in &[
         Metric::Revenue,
         Metric::NetIncome,
         Metric::FreeCashFlow,
+        Metric::FreeCashFlowYield,
+        Metric::HistoricalMarketCap,
         Metric::TotalDebt,
         Metric::CashAndEquivalents,
         Metric::TotalAssets,
         Metric::TotalLiabilities,
     ] {
-        let points = series::revenue_aware_series(
-            state.normalized_facts.as_ref(),
-            state.derived_metrics.as_ref(),
-            &cik,
-            *metric,
-            PeriodKind::Annual,
-        )
-        .await?;
+        let points =
+            series::revenue_aware_series(&ctx, &cik, *metric, PeriodKind::Annual).await?;
         if points.is_empty() { continue; }
         let history: Vec<(String, i64)> = points
             .iter()

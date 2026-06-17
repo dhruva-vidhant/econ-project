@@ -440,6 +440,32 @@ fallback). Both inputs are required; a period whose revenue is non-positive is
 omitted (the margin is undefined). An operating loss yields a valid negative
 margin and is preserved. The UI renders the value as a percentage.
 
+### FR-034 — Free Cash Flow Yield
+
+Must support free cash flow yield as a predefined derived metric, computed at
+read time per period:
+
+```
+free_cash_flow_yield = free_cash_flow ÷ market_cap
+```
+
+Stored as a dimensionless decimal ratio in micro-units (ratio × 1,000,000, per
+§6.2); a 4.0% yield is `40000`. The UI renders it as a percentage.
+
+- **Annual** periods use the annual free cash flow.
+- **Quarterly** periods use **trailing-twelve-month** free cash flow — the sum
+  of the quarter and its three predecessors — so the series is an annualized,
+  comparable yield rather than a seasonal single-quarter figure. A quarter
+  without four strictly-consecutive trailing quarters is omitted (no partial
+  trailing-twelve-month value).
+
+The denominator is the period's market cap (FR-050). Both numerator and market
+cap are required; a non-positive market cap is omitted (yield undefined). A
+cash-burning period yields a valid negative number, which is preserved.
+
+Trailing-twelve-month free cash flow is itself exposed as a derived metric
+(`free_cash_flow_ttm`) so the quarterly yield is transparent.
+
 ---
 
 # 6.5 Financial Data Normalization
@@ -499,12 +525,29 @@ Accuracy and consistency are prioritized over ingestion speed.
 Dashboard must display:
 - Revenue
 - Net income
-- Historical market cap at each filing date (computed at ingestion from historical price and shares outstanding, persisted locally, available offline)
-- Current market cap (computed from a live price source when online; gracefully unavailable when offline)
-- Debt
+- Free cash flow
+- Free cash flow yield (FR-034)
+- Historical market cap per period (see below)
+- Total debt
 - Derived metrics
 
-The historical market cap series is required and must be available offline once a company has been ingested. The current market cap value is best-effort: it requires connectivity to a market data source and may be omitted from the widget when offline or when the source is unavailable, without affecting any other dashboard functionality.
+**Historical market cap** is computed at **read time** per period as
+`close_price(period end date) × shares_outstanding_basic(period)`. End-of-day
+closing prices are fetched once at ingestion from the market-data adapter
+(§7.5) — one per distinct period end-date, resolved to the nearest prior
+trading day — and persisted in `historical_price`, so the market-cap series is
+available offline once a company has been ingested. (Market cap is derived at
+read time, like total debt and free cash flow, rather than persisted as a
+value, so it never goes stale when shares outstanding is superseded; only the
+external price is persisted.) A period whose price could not be fetched simply
+has no market cap, and hence no free-cash-flow yield, until a later refresh
+succeeds — this never affects any other dashboard functionality.
+
+> **Revision note.** An earlier draft specified market cap at each *filing*
+> date, persisted as a value. It was changed to **period-end** price (filing
+> lags vary across companies, so period-end is more comparable) computed at
+> **read time** (supersession-safe), consistent with the other read-time
+> derivations. Current (live) market cap remains deferred.
 
 ### FR-051 — Historical Charts
 
