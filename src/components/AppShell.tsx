@@ -16,7 +16,7 @@ export default function AppShell({ children }: Props) {
             ← Saved companies
           </Link>
         )}
-        <div className="ml-auto text-xs text-muted">v0.1.0 — local-first</div>
+        <div className="ml-auto text-xs text-muted">v1.0.0 — local-first</div>
       </header>
       <main className="flex-1 overflow-auto">{children}</main>
     </div>

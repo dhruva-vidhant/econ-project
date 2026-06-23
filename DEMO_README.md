@@ -19,7 +19,7 @@ The transfer bundle (`econ-demo-bundle/`) contains:
 
 | File | Purpose |
 |---|---|
-| `EconProject_0.1.0_aarch64.dmg` | Ad-hoc signed macOS installer (no Apple Developer ID). Open, drag to Applications. |
+| `EconProject_1.0.0_aarch64.dmg` | Ad-hoc signed macOS installer (no Apple Developer ID). Open, drag to Applications. |
 | `fix-quarantine.sh` | One-shot script to strip macOS quarantine after transfer (REQUIRED — see §2.2). |
 | `econ-project-source-<commit>.tar.gz` | Full source tarball at the demo commit, for inspection or rebuild. |
 | `prd.pdf` | Product Requirements Document. |
@@ -33,7 +33,7 @@ The transfer bundle (`econ-demo-bundle/`) contains:
 
 ### 2.1 Open the .dmg and copy the .app
 
-1. Double-click `EconProject_0.1.0_aarch64.dmg`.
+1. Double-click `EconProject_1.0.0_aarch64.dmg`.
 2. In the mounted Finder window, drag `EconProject.app` to `/Applications` (or any folder).
 3. Eject the .dmg.
 
@@ -164,7 +164,7 @@ tar -xzf econ-project-source-*.tar.gz
 cd econ-project-*/
 npm install
 npm run tauri build
-# Output: src-tauri/target/release/bundle/dmg/EconProject_0.1.0_aarch64.dmg
+# Output: src-tauri/target/release/bundle/dmg/EconProject_1.0.0_aarch64.dmg
 ```
 
 Requires: Node 20+, Rust 1.77+, Xcode Command Line Tools (`xcode-select --install`). Build takes 5-15 minutes.

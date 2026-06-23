@@ -253,7 +253,7 @@ mockIPC(async (cmd, args) => {
   const a = (args as Record<string, unknown>) ?? {};
   switch (cmd) {
     case "ping":
-      return { message: "pong", version: "0.1.0" };
+      return { message: "pong", version: "1.0.0" };
     case "list_companies":
       return state.companies;
     case "add_company": {
