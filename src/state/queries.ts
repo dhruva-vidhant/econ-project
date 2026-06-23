@@ -9,6 +9,7 @@ export const QK = {
   metricHistory: (cik: string, metric: string, kind: string) =>
     ["metricHistory", cik, metric, kind] as const,
   lineage: (id: number) => ["lineage", id] as const,
+  currentValuation: (cik: string) => ["currentValuation", cik] as const,
 };
 
 export function useCompanies() {
@@ -78,6 +79,25 @@ export function useRefreshCompany() {
       qc.invalidateQueries({ queryKey: QK.companies });
       qc.invalidateQueries({ queryKey: QK.dashboard(data.company.cik) });
       qc.invalidateQueries({ queryKey: QK.events(data.company.cik) });
+    },
+  });
+}
+
+export function useCurrentValuation(cik: string | undefined) {
+  return useQuery({
+    queryKey: cik ? QK.currentValuation(cik) : ["currentValuation", "none"],
+    queryFn: () => api.getCurrentValuation(cik!),
+    enabled: !!cik,
+  });
+}
+
+export function useRefreshPrice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.refreshPrice,
+    onSuccess: (data, cik) => {
+      qc.setQueryData(QK.currentValuation(cik), data);
+      qc.invalidateQueries({ queryKey: ["metricHistory", cik, "free_cash_flow_yield", "annual"] });
     },
   });
 }

@@ -11,6 +11,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   AddCompanyResponse,
   Company,
+  CurrentValuation,
   DashboardPayload,
   IngestionEvent,
   LineagePayload,
@@ -28,6 +29,7 @@ type State = {
   history: Record<string, MetricSeriesPoint[]>; // keyed by `${cik}:${metric}:${kind}`
   dashboards: Record<string, DashboardPayload>;
   lineage: Record<number, LineagePayload>;
+  currentValuations: Record<string, CurrentValuation | null>;
   failAddTickers: Set<string>;
 };
 
@@ -37,6 +39,7 @@ const state: State = {
   history: {},
   dashboards: {},
   lineage: {},
+  currentValuations: {},
   failAddTickers: new Set(["XYZNOPE", "BADTKR"]),
 };
 
@@ -58,6 +61,7 @@ window.__econMock = {
     state.history = {};
     state.dashboards = {};
     state.lineage = {};
+    state.currentValuations = {};
   },
   seedAaplFixture() {
     seedAapl();
@@ -229,6 +233,18 @@ function seedAapl() {
     superseded_by: null,
   };
   state.lineage[latestRevId] = { primary, raw_fact: rawFact, filing, supersession_chain: [] };
+
+  // Seed current valuation
+  state.currentValuations["0000320193"] = {
+    price_micro: 195_000_000,
+    price_as_of: new Date().toISOString(),
+    shares: 15_000_000_000,
+    shares_period_end: "2024-09-28",
+    market_cap_micro: 2_925_000_000_000_000,
+    ttm_fcf_micro: 108_807_000_000_000_000,
+    ttm_fcf_period_end: "2024-09-28",
+    fcf_yield_micro: 37_198,
+  };
 }
 
 // ───────── IPC mock dispatcher ─────────
@@ -300,6 +316,18 @@ mockIPC(async (cmd, args) => {
     }
     case "get_supersession_chain": {
       return [];
+    }
+    case "get_current_valuation": {
+      const cik = String(a.cik);
+      return state.currentValuations[cik] ?? null;
+    }
+    case "refresh_price": {
+      const cik = String(a.cik);
+      const cur = state.currentValuations[cik];
+      if (cur) {
+        cur.price_as_of = new Date().toISOString();
+      }
+      return state.currentValuations[cik] ?? null;
     }
     default:
       throw mkErr("internal", `mock harness has no handler for command: ${cmd}`);

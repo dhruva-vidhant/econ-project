@@ -47,7 +47,8 @@ export type Metric =
   | "cash_from_operations" | "capital_expenditures" | "depreciation_amortization"
   | "free_cash_flow" | "operating_margin"
   | "free_cash_flow_ttm" | "free_cash_flow_yield"
-  | "historical_market_cap" | "current_market_cap";
+  | "historical_market_cap" | "current_market_cap"
+  | "current_free_cash_flow_yield";
 
 /** Display-label overrides where title-casing the snake_case id reads poorly. */
 const METRIC_LABELS: Record<string, string> = {
@@ -55,6 +56,7 @@ const METRIC_LABELS: Record<string, string> = {
   free_cash_flow_yield: "Free Cash Flow Yield",
   historical_market_cap: "Market Cap",
   current_market_cap: "Current Market Cap",
+  current_free_cash_flow_yield: "Current Free Cash Flow Yield",
 };
 
 /** Pretty display label for a metric (e.g. "Net Income"). */
@@ -183,6 +185,7 @@ export interface MetricSeriesPoint {
 export const RATIO_METRICS: ReadonlySet<string> = new Set([
   "operating_margin",
   "free_cash_flow_yield",
+  "current_free_cash_flow_yield",
 ]);
 
 export function isRatioMetric(metric: string): boolean {
@@ -222,4 +225,15 @@ export function fmtUsdCompact(micro: number): string {
   if (abs >= 1e6) return fmt(abs / 1e6, "M");
   if (abs >= 1e3) return fmt(abs / 1e3, "K");
   return `${v < 0 ? "-" : ""}$${abs.toFixed(2)}`;
+}
+
+export interface CurrentValuation {
+  price_micro: number;
+  price_as_of: string;
+  shares: number;
+  shares_period_end: string;
+  market_cap_micro: number;
+  ttm_fcf_micro: number;
+  ttm_fcf_period_end: string;
+  fcf_yield_micro: number;
 }

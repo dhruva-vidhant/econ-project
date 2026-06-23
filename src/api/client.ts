@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AddCompanyResponse,
   Company,
+  CurrentValuation,
   DashboardPayload,
   IngestionEvent,
   LineagePayload,
@@ -54,4 +55,12 @@ export async function getLineage(normalizedFactId: number): Promise<LineagePaylo
 
 export async function refreshCompany(cik: string): Promise<AddCompanyResponse> {
   return invoke("refresh_company", { cik });
+}
+
+export async function getCurrentValuation(cik: string): Promise<CurrentValuation | null> {
+  return invoke("get_current_valuation", { cik });
+}
+
+export async function refreshPrice(cik: string): Promise<CurrentValuation | null> {
+  return invoke("refresh_price", { cik });
 }

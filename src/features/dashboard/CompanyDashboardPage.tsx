@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
+import CurrentValuationCard from "@/features/dashboard/CurrentValuationCard";
 import { fmtMetricValue, prettyMetric } from "@/api/types";
 import {
   useCompanies,
@@ -60,6 +61,10 @@ export default function CompanyDashboardPage() {
         {refresh.isError && (
           <Error msg={(refresh.error as { detail?: { message?: string } })?.detail?.message ?? "Refresh failed."} />
         )}
+
+        <section className="mb-6">
+          <CurrentValuationCard cik={company.cik} />
+        </section>
 
         {dashboard.isLoading && <Loading />}
 
