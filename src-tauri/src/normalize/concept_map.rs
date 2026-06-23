@@ -131,7 +131,7 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::InterestExpense => &[
             ("us-gaap", "InterestExpense"),
         ],
-        Metric::HistoricalMarketCap | Metric::CurrentMarketCap => &[],
+        Metric::HistoricalMarketCap | Metric::CurrentMarketCap | Metric::CurrentFreeCashFlowYield => &[],
     }
 }
 

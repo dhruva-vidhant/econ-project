@@ -13,6 +13,7 @@ use crate::domain::{
 use crate::errors::{PipelineError, SourceError};
 use crate::normalize::{concept_map, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
+use crate::repos::current_price::CurrentPriceRepo;
 use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::historical_price::HistoricalPriceRepo;
@@ -44,6 +45,7 @@ pub struct IngestionDeps {
     pub normalized_facts: Arc<dyn NormalizedFactRepo>,
     pub derived_metrics: Arc<dyn DerivedMetricRepo>,
     pub prices: Arc<dyn HistoricalPriceRepo>,
+    pub current_prices: Arc<dyn CurrentPriceRepo>,
     pub events: Arc<dyn IngestionEventRepo>,
 }
 
@@ -394,6 +396,29 @@ async fn fetch_prices(
             written += 1;
         }
     }
+
+    // Also fetch and persist the spot price for current valuation metrics.
+    match deps.market_data.current_price(ticker).await {
+        Ok(spot_micro) => {
+            deps.current_prices
+                .upsert(cik, &ticker.0, spot_micro, chrono::Utc::now(), "yahoo")
+                .await?;
+        }
+        Err(e) => {
+            record_event(
+                deps,
+                cik,
+                None,
+                "prices",
+                Severity::Warn,
+                true,
+                format!("Spot price unavailable ({e}); current market cap and current FCF yield will be absent."),
+                events,
+            )
+            .await?;
+        }
+    }
+
     record_event(deps, cik, None, "prices", Severity::Info, false,
         format!("Fetched {written} end-of-day closes for market-cap derivation."),
         events).await?;

@@ -3,15 +3,17 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::derived::series::{self, MetricSeriesPoint};
+use crate::derived::series::{self, CurrentValuation, MetricSeriesPoint};
 use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, PeriodKind, Ticker};
 use crate::errors::AppError;
 use crate::pipeline::{ingest_company, IngestionSummary};
 use crate::repos::company::CompanyRepo;
+use crate::repos::current_price::CurrentPriceRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::ingestion_event::IngestionEventRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
 use crate::repos::raw_fact::RawFactRepo;
+use crate::sources::market_data::MarketDataAdapter;
 
 use super::state::AppState;
 
@@ -216,4 +218,34 @@ pub async fn get_lineage(
         .ok_or_else(|| AppError::not_found("source filing missing"))?;
     let chain = state.normalized_facts.supersession_chain(nf.id).await?;
     Ok(LineagePayload { primary: nf, raw_fact: raw, filing, supersession_chain: chain })
+}
+
+#[tauri::command]
+pub async fn get_current_valuation(
+    state: State<'_, AppState>,
+    cik: String,
+) -> Result<Option<CurrentValuation>, AppError> {
+    let cik = Cik::from_any(&cik).map_err(AppError::invalid)?;
+    let ctx = state.read_ctx();
+    series::current_valuation(&ctx, &cik).await
+}
+
+#[tauri::command]
+pub async fn refresh_price(
+    state: State<'_, AppState>,
+    cik: String,
+) -> Result<Option<CurrentValuation>, AppError> {
+    let cik = Cik::from_any(&cik).map_err(AppError::invalid)?;
+    let company = state
+        .companies
+        .get_by_cik(&cik)
+        .await?
+        .ok_or_else(|| AppError::not_found(format!("company {cik} not found")))?;
+    let price_micro = state.market_data.current_price(&company.ticker).await?;
+    state
+        .current_prices
+        .upsert(&cik, &company.ticker.0, price_micro, chrono::Utc::now(), "yahoo")
+        .await?;
+    let ctx = state.read_ctx();
+    series::current_valuation(&ctx, &cik).await
 }

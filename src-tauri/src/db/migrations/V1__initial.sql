@@ -177,6 +177,14 @@ CREATE TABLE IF NOT EXISTS fx_rate (
   PRIMARY KEY (currency, date)
 );
 
+CREATE TABLE IF NOT EXISTS current_price (
+  cik             TEXT PRIMARY KEY REFERENCES company(cik) ON DELETE RESTRICT,
+  ticker          TEXT NOT NULL,
+  price_micro     INTEGER NOT NULL,
+  as_of           TEXT NOT NULL,
+  source          TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS derived_metric (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   cik             TEXT NOT NULL REFERENCES company(cik) ON DELETE RESTRICT,

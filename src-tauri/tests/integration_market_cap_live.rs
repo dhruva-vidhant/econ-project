@@ -20,6 +20,7 @@ use econ_project_lib::derived::series::ReadCtx;
 use econ_project_lib::domain::{Metric, PeriodKind, Ticker};
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::SqliteCompanyRepo;
+use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
 use econ_project_lib::repos::filing::SqliteFilingRepo;
 use econ_project_lib::repos::historical_price::{HistoricalPriceRepo, SqliteHistoricalPriceRepo};
@@ -49,6 +50,7 @@ async fn market_cap_and_fcf_yield_live() {
     let normalized_facts = Arc::new(SqliteNormalizedFactRepo::new(pool.clone()));
     let derived_metrics = Arc::new(SqliteDerivedMetricRepo::new(pool.clone()));
     let prices = Arc::new(SqliteHistoricalPriceRepo::new(pool.clone()));
+    let current_prices = Arc::new(SqliteCurrentPriceRepo::new(pool.clone()));
     let events = Arc::new(SqliteIngestionEventRepo::new(pool.clone()));
 
     let deps = IngestionDeps {
@@ -61,6 +63,7 @@ async fn market_cap_and_fcf_yield_live() {
         normalized_facts: normalized_facts.clone(),
         derived_metrics: derived_metrics.clone(),
         prices: prices.clone(),
+        current_prices: current_prices.clone(),
         events,
     };
 
@@ -82,6 +85,7 @@ async fn market_cap_and_fcf_yield_live() {
         normalized_facts: normalized_facts.as_ref(),
         derived_metrics: derived_metrics.as_ref(),
         prices: prices.as_ref(),
+        current_prices: current_prices.as_ref(),
     };
 
     // ── 2. Market cap sane ───────────────────────────────────────────────

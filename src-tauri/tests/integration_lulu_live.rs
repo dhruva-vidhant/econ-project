@@ -30,6 +30,7 @@ use econ_project_lib::repos::normalized_fact::SqliteNormalizedFactRepo;
 use econ_project_lib::repos::period::SqlitePeriodRepo;
 use econ_project_lib::repos::raw_fact::SqliteRawFactRepo;
 use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
+use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::sources::market_data::YahooMarketData;
 use econ_project_lib::sources::sec_client::SecClient;
 
@@ -54,6 +55,7 @@ async fn lulu_annual_series_has_no_gaps_and_quarters_are_ordered() {
             econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo::new(pool.clone()),
         ),
         prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
+        current_prices: Arc::new(SqliteCurrentPriceRepo::new(pool.clone())),
         events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
     };
 

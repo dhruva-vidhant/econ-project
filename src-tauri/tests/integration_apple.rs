@@ -16,6 +16,7 @@ use econ_project_lib::db::Pool;
 use econ_project_lib::domain::{Metric, PeriodKind, Ticker};
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::{CompanyRepo, SqliteCompanyRepo};
+use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
 use econ_project_lib::repos::filing::{FilingRepo, SqliteFilingRepo};
 use econ_project_lib::repos::ingestion_event::{IngestionEventRepo, SqliteIngestionEventRepo};
@@ -54,6 +55,7 @@ async fn ingest_aapl_against_real_sec() {
         normalized_facts: normalized_facts.clone(),
         derived_metrics: derived_metrics.clone(),
         prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
+        current_prices: Arc::new(SqliteCurrentPriceRepo::new(pool.clone())),
         events: events.clone(),
     };
 

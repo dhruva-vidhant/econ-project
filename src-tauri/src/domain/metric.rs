@@ -50,6 +50,7 @@ pub enum Metric {
     // Market (derived)
     HistoricalMarketCap,
     CurrentMarketCap,
+    CurrentFreeCashFlowYield,
 }
 
 impl Metric {
@@ -85,6 +86,7 @@ impl Metric {
             Metric::FreeCashFlowYield => "free_cash_flow_yield",
             Metric::HistoricalMarketCap => "historical_market_cap",
             Metric::CurrentMarketCap => "current_market_cap",
+            Metric::CurrentFreeCashFlowYield => "current_free_cash_flow_yield",
         }
     }
 
@@ -120,6 +122,7 @@ impl Metric {
             "free_cash_flow_yield" => Metric::FreeCashFlowYield,
             "historical_market_cap" => Metric::HistoricalMarketCap,
             "current_market_cap" => Metric::CurrentMarketCap,
+            "current_free_cash_flow_yield" => Metric::CurrentFreeCashFlowYield,
             _ => return None,
         })
     }
@@ -138,7 +141,7 @@ impl Metric {
         Metric::InterestIncomeOperating, Metric::InterestExpense,
         Metric::FreeCashFlow, Metric::OperatingMargin,
         Metric::FreeCashFlowTtm, Metric::FreeCashFlowYield,
-        Metric::HistoricalMarketCap, Metric::CurrentMarketCap,
+        Metric::HistoricalMarketCap, Metric::CurrentMarketCap, Metric::CurrentFreeCashFlowYield,
     ];
 
     /// Whether this metric is "instant" (balance-sheet point-in-time) vs "duration".

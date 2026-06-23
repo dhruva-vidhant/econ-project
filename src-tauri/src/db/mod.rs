@@ -141,6 +141,7 @@ mod tests {
         for required in [
             "amendment_coverage_gap",
             "company",
+            "current_price",
             "derived_metric",
             "filing",
             "fx_rate",

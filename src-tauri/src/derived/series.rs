@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::domain::{Cik, Metric, Period, PeriodKind};
 use crate::errors::AppError;
+use crate::repos::current_price::CurrentPriceRepo;
 use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::historical_price::HistoricalPriceRepo;
 use crate::repos::normalized_fact::NormalizedFactRepo;
@@ -28,6 +29,7 @@ pub struct ReadCtx<'a> {
     pub normalized_facts: &'a dyn NormalizedFactRepo,
     pub derived_metrics: &'a dyn DerivedMetricRepo,
     pub prices: &'a dyn HistoricalPriceRepo,
+    pub current_prices: &'a dyn CurrentPriceRepo,
 }
 
 /// One point in a metric's time series, as returned over IPC. For monetary
@@ -63,6 +65,8 @@ pub async fn revenue_aware_series(
     kind: PeriodKind,
 ) -> Result<Vec<MetricSeriesPoint>, AppError> {
     match metric {
+        // Live scalar metrics served by current_valuation, not series.
+        Metric::CurrentMarketCap | Metric::CurrentFreeCashFlowYield => return Ok(Vec::new()),
         Metric::TotalDebt => return total_debt_series(ctx, cik, kind).await,
         Metric::GrossProfit => return gross_profit_series(ctx, cik, kind).await,
         Metric::CapitalExpenditures => return capital_expenditures_series(ctx, cik, kind).await,
@@ -415,4 +419,107 @@ async fn free_cash_flow_yield_series(
         .collect();
     out.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
     Ok(out)
+}
+
+/// A helper for retrieving the most recent value from a series across both
+/// quarterly AND annual periods, useful for live metrics that need the absolute
+/// latest reported value (shares, FCF) regardless of which series it came from.
+async fn current_series<'a>(
+    ctx: &ReadCtx<'a>,
+    cik: &Cik,
+    metric: Metric,
+) -> Result<Vec<MetricSeriesPoint>, AppError> {
+    let mut annual = ctx
+        .normalized_facts
+        .current_series(cik, metric, PeriodKind::Annual)
+        .await?
+        .into_iter()
+        .map(|(p, n)| MetricSeriesPoint {
+            period: p,
+            value: n.value,
+            source_kind: n.source_kind.as_str().into(),
+            normalized_fact_id: n.id,
+        })
+        .collect::<Vec<_>>();
+    let mut quarterly = ctx
+        .normalized_facts
+        .current_series(cik, metric, PeriodKind::Quarterly)
+        .await?
+        .into_iter()
+        .map(|(p, n)| MetricSeriesPoint {
+            period: p,
+            value: n.value,
+            source_kind: n.source_kind.as_str().into(),
+            normalized_fact_id: n.id,
+        })
+        .collect::<Vec<_>>();
+    annual.append(&mut quarterly);
+    annual.sort_by(|a, b| a.period.end_date.cmp(&b.period.end_date));
+    Ok(annual)
+}
+
+/// Current valuation: live spot price, latest shares, market cap, TTM FCF, and
+/// current FCF yield. Used for the `current_market_cap` and
+/// `current_free_cash_flow_yield` metrics. Returns `None` if any required input
+/// is missing or if derived market cap is non-positive.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurrentValuation {
+    pub price_micro: i64,
+    pub price_as_of: chrono::DateTime<chrono::Utc>,
+    pub shares: i64,
+    pub shares_period_end: chrono::NaiveDate,
+    pub market_cap_micro: i64,
+    pub ttm_fcf_micro: i64,
+    pub ttm_fcf_period_end: chrono::NaiveDate,
+    pub fcf_yield_micro: i64,
+}
+
+pub async fn current_valuation(
+    ctx: &ReadCtx<'_>,
+    cik: &Cik,
+) -> Result<Option<CurrentValuation>, AppError> {
+    // 1. Fetch stored spot price.
+    let Some(price) = ctx.current_prices.get(cik).await? else {
+        return Ok(None);
+    };
+
+    // 2. Latest shares (across annual and quarterly, by max end_date).
+    let shares_series = current_series(ctx, cik, Metric::SharesOutstandingBasic).await?;
+    let Some(shares_point) = shares_series.last() else {
+        return Ok(None);
+    };
+
+    // 3. Current market cap.
+    let market_cap = super::market_cap(price.price_micro, shares_point.value);
+    if market_cap <= 0 {
+        return Ok(None);
+    }
+
+    // 4. TTM free cash flow: prefer latest quarterly TTM, fall back to latest annual FCF.
+    let ttm_q = Box::pin(free_cash_flow_ttm_series(ctx, cik, PeriodKind::Quarterly)).await?;
+    let fcf_point = if let Some(p) = ttm_q.last() {
+        p.clone()
+    } else {
+        let fcf_a = Box::pin(revenue_aware_series(ctx, cik, Metric::FreeCashFlow, PeriodKind::Annual)).await?;
+        match fcf_a.last() {
+            Some(p) => p.clone(),
+            None => return Ok(None),
+        }
+    };
+
+    // 5. FCF yield.
+    let Some(fcf_yield) = super::fcf_yield_micro(fcf_point.value, market_cap) else {
+        return Ok(None);
+    };
+
+    Ok(Some(CurrentValuation {
+        price_micro: price.price_micro,
+        price_as_of: price.as_of,
+        shares: shares_point.value,
+        shares_period_end: shares_point.period.end_date,
+        market_cap_micro: market_cap,
+        ttm_fcf_micro: fcf_point.value,
+        ttm_fcf_period_end: fcf_point.period.end_date,
+        fcf_yield_micro: fcf_yield,
+    }))
 }

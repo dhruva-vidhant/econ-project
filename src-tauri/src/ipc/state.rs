@@ -7,6 +7,7 @@ use tauri::{Manager, Runtime};
 use crate::db::Pool;
 use crate::pipeline::IngestionDeps;
 use crate::repos::company::SqliteCompanyRepo;
+use crate::repos::current_price::SqliteCurrentPriceRepo;
 use crate::repos::derived_metric::SqliteDerivedMetricRepo;
 use crate::repos::filing::SqliteFilingRepo;
 use crate::repos::ingestion_event::SqliteIngestionEventRepo;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub normalized_facts: Arc<SqliteNormalizedFactRepo>,
     pub derived_metrics: Arc<SqliteDerivedMetricRepo>,
     pub prices: Arc<SqliteHistoricalPriceRepo>,
+    pub current_prices: Arc<SqliteCurrentPriceRepo>,
     pub events: Arc<SqliteIngestionEventRepo>,
     pub sec: Arc<SecClient>,
     pub market_data: Arc<YahooMarketData>,
@@ -57,6 +59,7 @@ impl AppState {
             normalized_facts: Arc::new(SqliteNormalizedFactRepo::new(pool.clone())),
             derived_metrics: Arc::new(SqliteDerivedMetricRepo::new(pool.clone())),
             prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
+            current_prices: Arc::new(SqliteCurrentPriceRepo::new(pool.clone())),
             events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
             sec,
             market_data,
@@ -70,6 +73,7 @@ impl AppState {
             normalized_facts: self.normalized_facts.as_ref(),
             derived_metrics: self.derived_metrics.as_ref(),
             prices: self.prices.as_ref(),
+            current_prices: self.current_prices.as_ref(),
         }
     }
 
@@ -84,6 +88,7 @@ impl AppState {
             normalized_facts: self.normalized_facts.clone(),
             derived_metrics: self.derived_metrics.clone(),
             prices: self.prices.clone(),
+            current_prices: self.current_prices.clone(),
             events: self.events.clone(),
         }
     }

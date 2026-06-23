@@ -50,5 +50,7 @@ pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + 
         commands::get_ingestion_events,
         commands::get_supersession_chain,
         commands::get_lineage,
+        commands::get_current_valuation,
+        commands::refresh_price,
     ]
 }

@@ -33,6 +33,7 @@ use econ_project_lib::derived::series::ReadCtx;
 use econ_project_lib::derived::{self, series};
 use econ_project_lib::domain::{Cik, Metric, PeriodKind};
 use econ_project_lib::repos::company::{CompanyRepo, SqliteCompanyRepo};
+use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
 use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
 use econ_project_lib::repos::normalized_fact::{NormalizedFactRepo, SqliteNormalizedFactRepo};
@@ -93,7 +94,8 @@ async fn fcf_and_operating_margin_accuracy_against_production_db() {
     let nf = SqliteNormalizedFactRepo::new(pool.clone());
     let dm = SqliteDerivedMetricRepo::new(pool.clone());
     let prices = SqliteHistoricalPriceRepo::new(pool.clone());
-    let ctx = ReadCtx { normalized_facts: &nf, derived_metrics: &dm, prices: &prices };
+    let current_prices = SqliteCurrentPriceRepo::new(pool.clone());
+    let ctx = ReadCtx { normalized_facts: &nf, derived_metrics: &dm, prices: &prices, current_prices: &current_prices };
 
     let saved = companies.list_saved().await.unwrap();
     assert!(!saved.is_empty(), "production DB has no saved companies to validate");
