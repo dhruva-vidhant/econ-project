@@ -62,5 +62,7 @@ pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + 
         custom_metrics_commands::upsert_custom_metric_point,
         custom_metrics_commands::delete_custom_metric_point,
         custom_metrics_commands::import_custom_metrics_csv,
+        custom_metrics_commands::render_csv,
+        custom_metrics_commands::export_csv,
     ]
 }

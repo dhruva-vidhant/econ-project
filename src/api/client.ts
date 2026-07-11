@@ -8,6 +8,8 @@ import type {
   CustomMetricPoint,
   CustomSeriesPoint,
   DashboardPayload,
+  ExportReport,
+  ExportRequest,
   ImportOptions,
   ImportReport,
   IngestionEvent,
@@ -125,4 +127,15 @@ export async function importCustomMetricsCsv(
   options: ImportOptions,
 ): Promise<ImportReport> {
   return invoke("import_custom_metrics_csv", { cik, csvText, options });
+}
+
+export async function renderCsv(request: ExportRequest): Promise<string> {
+  return invoke("render_csv", { request });
+}
+
+export async function exportCsv(
+  request: ExportRequest,
+  destPath: string,
+): Promise<ExportReport> {
+  return invoke("export_csv", { request, destPath });
 }

@@ -8,6 +8,8 @@ use crate::domain::{
     NewCustomMetric, PeriodKind,
 };
 use crate::errors::AppError;
+use crate::export::csv as export_csv_mod;
+use crate::export::csv::{ExportReport, ExportRequest};
 use crate::import::csv::{import_csv, ImportOptions, ImportReport};
 use crate::repos::custom_metric::CustomMetricRepo;
 use crate::repos::period::PeriodRepo;
@@ -121,4 +123,23 @@ pub async fn import_custom_metrics_csv(
     import_csv(&cik, &csv_text, &options, state.custom_metrics.as_ref(), &periods)
         .await
         .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn render_csv(
+    state: State<'_, AppState>,
+    request: ExportRequest,
+) -> Result<String, AppError> {
+    let ctx = state.read_ctx();
+    export_csv_mod::render_csv(&request, &ctx, state.custom_metrics.as_ref()).await
+}
+
+#[tauri::command]
+pub async fn export_csv(
+    state: State<'_, AppState>,
+    request: ExportRequest,
+    dest_path: String,
+) -> Result<ExportReport, AppError> {
+    let ctx = state.read_ctx();
+    export_csv_mod::export_csv(request, &dest_path, &ctx, state.custom_metrics.as_ref()).await
 }

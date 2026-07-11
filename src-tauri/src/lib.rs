@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod derived;
 pub mod ipc;
 pub mod import;
+pub mod export;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
