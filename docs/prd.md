@@ -119,11 +119,11 @@ The following are explicitly excluded from V1:
 
 - User-defined formulas
 - Plugin ecosystem
-- Custom widgets
+- Custom widgets *(V1 non-goal; delivered in V2 as user-imported custom metrics — see `docs/custom-metrics-prd.md`)*
 
 ### Export Features
 
-- CSV export
+- CSV export *(V1 non-goal; delivered in V2 — see `docs/custom-metrics-prd.md`)*
 - PDF export
 - Image export
 - Spreadsheet integrations
@@ -985,6 +985,16 @@ Recommended:
 
 # 15.1 V2 Enhancements
 
+## Custom Metrics & Export *(specified — see `docs/custom-metrics-prd.md`)*
+
+- **Custom metrics (user-imported KPIs)** — per-company, user-supplied business
+  indicators (e.g. PayPal's Total Payment Volume, active accounts), imported via
+  CSV, period-aligned, and charted alongside built-in metrics. User data is held
+  in a separate store and excluded from source lineage.
+- **CSV export** — download any chart series or financial table as
+  full-precision CSV (built-in metrics and custom metrics), for validation and
+  sharing. Backend-generated to preserve exactness.
+
 ## Analytical Enhancements
 
 - Multi-company comparison
@@ -1009,7 +1019,6 @@ Recommended:
 
 ## Export Features
 
-- CSV export
 - Spreadsheet interoperability
 - Chart/image export
 
