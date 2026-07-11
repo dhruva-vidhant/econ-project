@@ -2,7 +2,7 @@
 
 # IFRS TAXONOMY & CURRENCY-AWARE NORMALIZATION
 
-**Status:** Proposed — awaiting sign-off on §5.2 (debt semantics) and §6 (currency scope)
+**Status:** **Approved 2026-07-11** — recommended architecture adopted in full (incl. §5.2 debt policy and §6 currency scope). See §9.
 **Companions:** `docs/ifrs-currency-support-techspec.md`
 **Parent:** `docs/architecture.md`
 **Trigger:** INFY (Infosys Ltd, CIK 0001067491) renders a blank dashboard — 4361 raw facts ingested, only 9 normalized.
@@ -123,7 +123,9 @@ If we map IFRS `LeaseLiabilities` → debt, an IFRS filer's leverage would inclu
 
 ### 5.3 Recommendation
 
-Adopt the economic-equivalence rule as written policy. Implement **Option A** now. Keep **Option C** on the roadmap for when lease disclosure becomes a product requirement. This is the one item that needs an explicit product **sign-off** before the debt concepts are mapped.
+Adopt the economic-equivalence rule as written policy. Implement **Option A** now. Keep **Option C** on the roadmap for when lease disclosure becomes a product requirement.
+
+**Approved (2026-07-11).** Lease liabilities are **not** debt: only interest-bearing borrowings map to `LongTermDebt` / `CurrentDebt`, matching the US-GAAP treatment. For Infosys this correctly yields ~zero debt. A separate `LeaseLiabilities` metric (Option C) is deferred until lease disclosure is a product requirement.
 
 ---
 
@@ -191,6 +193,8 @@ Supporting structural changes:
 
 Ship **Option A + Option C now** (they are cheap, and together they make the pipeline *honest* — correct for convenience-translation filers, loud-and-safe for everyone else). Ship **Option B** as the follow-on work package that unlocks general FPI support. Sequencing and the FX-source choice are in the tech spec.
 
+**Approved (2026-07-11).** The layered resolution ladder (prefer USD → FX-convert with recorded provenance → skip + diagnostic) is the target architecture. WP3a (Options A + C) lands with WP1; **WP3b (Option B, FX conversion) is scheduled as its own follow-on unit of work, not this cycle.**
+
 ---
 
 ## 7. Forward-looking guards — stop silent recurrence
@@ -217,11 +221,24 @@ flowchart LR
 
 ## 8. Decision summary
 
-| Gap | Verdict | Chosen approach | Needs sign-off? |
+| Gap | Verdict | Chosen approach | Status |
 |---|---|---|---|
-| 1 — IFRS coverage | **Fix now** | Inline `ifrs-full` candidates (Opt A) + coverage-matrix test | No |
-| 2 — Debt semantics | **Decide now, implement cheaply** | Economic-equivalence rule; borrowings-only, exclude leases (Opt A); `LeaseLiabilities` metric deferred (Opt C) | **Yes — product sign-off on treatment of leases as non-debt** |
-| 3 — Currency | **Guard now, full fix scheduled** | USD-preference + reject/diagnostic now (Opts A+C); FX conversion via `FxRateSource` next (Opt B) | Scope confirmation on whether Opt B is in this cycle |
-| Cross-cutting | **Fix now** | Four guards in §7 | No |
+| 1 — IFRS coverage | **Fix now** | Inline `ifrs-full` candidates (Opt A) + coverage-matrix test | **Approved** |
+| 2 — Debt semantics | **Decide now, implement cheaply** | Economic-equivalence rule; borrowings-only, exclude leases (Opt A); `LeaseLiabilities` metric deferred (Opt C) | **Approved — leases are not debt** |
+| 3 — Currency | **Guard now, full fix scheduled** | USD-preference + reject/diagnostic now (Opts A+C); FX conversion via `FxRateSource` next (Opt B) | **Approved — WP3a this cycle, WP3b follow-on** |
+| Cross-cutting | **Fix now** | Four guards in §7 | **Approved** |
 
-The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference between "INFY works" and "IFRS filers work correctly and safely in general" — this document recommends fixing Gap 1 immediately, deciding Gap 2's policy before mapping any debt concept, and landing Gap 3's guards now with its FX conversion as the next scheduled unit of work.
+The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference between "INFY works" and "IFRS filers work correctly and safely in general": Gap 1 is fixed immediately, Gap 2's policy is locked (leases are not debt) before any debt concept is mapped, and Gap 3's guards land now with its FX conversion scheduled as the next unit of work.
+
+---
+
+## 9. Approvals
+
+| Date | Decision | Approved by |
+|---|---|---|
+| 2026-07-11 | Recommended architecture adopted **in full** — no deviations. | Product owner |
+| 2026-07-11 | **Gap 2 (debt):** lease liabilities are **not** debt; map interest-bearing borrowings only, for parity with the US-GAAP treatment. `LeaseLiabilities` metric deferred. | Product owner |
+| 2026-07-11 | **Gap 3 (currency):** layered resolution ladder is the target architecture. WP3a (USD-preference + reject/diagnostic) ships with WP1; **WP3b (FX conversion) is a scheduled follow-on, not this cycle.** | Product owner |
+| 2026-07-11 | **Guards (§7):** all four adopted and ship with WP1. | Product owner |
+
+**Implementation status:** not started. Deferred at the product owner's request while a separate agent is editing source files, to avoid write conflicts. This document and its companion tech spec are the authoritative record until implementation begins.

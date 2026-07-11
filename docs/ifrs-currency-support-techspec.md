@@ -2,7 +2,7 @@
 
 # IFRS TAXONOMY & CURRENCY-AWARE NORMALIZATION
 
-**Status:** Proposed
+**Status:** **Approved 2026-07-11** (design §9) — not yet implemented
 **Companions:** `docs/ifrs-currency-support-design.md`
 **Parent:** `docs/architecture.md`, `docs/tech_spec.md`
 **Audience:** Implementing engineers / agents
@@ -14,7 +14,7 @@
 Three work packages, independently shippable in order:
 
 - **WP1 — IFRS concept coverage** (closes the INFY blank screen; additive).
-- **WP2 — debt semantics policy** (IFRS 16; gated on product sign-off).
+- **WP2 — debt semantics policy** (IFRS 16; **policy approved** — leases are not debt).
 - **WP3 — currency-aware normalization** (WP3a guards now; WP3b FX conversion next).
 
 Plus cross-cutting **guards** (WP-G) that ship with WP1.
@@ -48,7 +48,7 @@ Extend each `concepts_for(metric)` arm by appending `ifrs-full` candidates **aft
 | `CapitalExpenditures` | `PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities` |
 | `DepreciationAmortization` | `DepreciationAndAmortisationExpense` |
 | `PropertyPlantAndEquipmentNet` | `PropertyPlantAndEquipment` |
-| `LongTermDebt` / `CurrentDebt` | **See WP2 — do not map until policy is signed off** |
+| `LongTermDebt` / `CurrentDebt` | **See WP2 — borrowings only (policy approved); mappings listed there** |
 
 Notes:
 - `TotalEquity`: parent-attributable first, incl-NCI (`Equity`) fallback — mirrors the existing US-GAAP ordering (`StockholdersEquity` before the incl-NCI variant).
@@ -68,9 +68,9 @@ INFY (CIK 0001067491) renders non-empty Income / Balance / Cashflow / Valuation 
 
 ## 3. WP2 — debt semantics (IFRS 16)
 
-**Gated on product sign-off** (design §5.3). Policy: **economic equivalence** — map interest-bearing borrowings only; exclude lease liabilities, matching the US-GAAP treatment.
+**Policy approved 2026-07-11** (design §5.3, §9): **economic equivalence** — map interest-bearing borrowings only; exclude lease liabilities, matching the US-GAAP treatment.
 
-Once approved, append to the debt arms:
+Append to the debt arms:
 
 | `Metric` arm | Append `("ifrs-full", …)` |
 |---|---|
@@ -249,11 +249,13 @@ No TypeScript changes for any WP (wire contract is unchanged — still USD micro
 ```mermaid
 flowchart LR
   WP1["WP1: IFRS coverage<br/>+ WP-G guards"] --> SHIP1["INFY un-blanked;<br/>coverage regressions caught"]
-  WP2["WP2: debt policy<br/>(needs sign-off)"] --> SHIP1
+  WP2["WP2: debt policy<br/>(approved)"] --> SHIP1
   SHIP1 --> WP3a["WP3a: USD-preference<br/>+ skip/diagnostic"]
   WP3a --> SHIP2["Pipeline honest for all FPIs<br/>(correct or loudly-skipped)"]
   SHIP2 --> WP3b["WP3b: FX conversion<br/>via FxRateSource"]
   WP3b --> SHIP3["General FPI support"]
 ```
 
-WP1 + WP-G is the minimum to close the reported bug safely. WP2 is a one-line-per-arm change once the lease policy is signed off. WP3a makes the pipeline honest for every foreign filer at low cost; WP3b is the larger, self-contained follow-on that unlocks issuers with no USD convenience translation.
+WP1 + WP-G is the minimum to close the reported bug safely. WP2 is a one-line-per-arm change (lease policy signed off — borrowings only). WP3a makes the pipeline honest for every foreign filer at low cost; WP3b is the larger, self-contained follow-on that unlocks issuers with no USD convenience translation.
+
+**Implementation status:** not started — deferred at the product owner's request while another agent edits source files, to avoid write conflicts.
