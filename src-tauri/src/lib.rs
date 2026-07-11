@@ -20,6 +20,7 @@ pub mod normalize;
 pub mod pipeline;
 pub mod derived;
 pub mod ipc;
+pub mod import;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
