@@ -11,13 +11,14 @@
 
 ## 1. Scope
 
-Three work packages, independently shippable in order:
+**Single-phase delivery (design §9).** All work packages ship together in one phase — there are no intermediate milestones. The WP lettering denotes internal build order within the phase, not separate releases:
 
 - **WP1 — IFRS concept coverage** (closes the INFY blank screen; additive).
 - **WP2 — debt semantics policy** (IFRS 16; **policy approved** — leases are not debt).
-- **WP3 — currency-aware normalization** (WP3a guards + USD-preference; WP3b FX conversion). **Both in scope this cycle** (WP3b moved in 2026-07-11, design §9).
+- **WP3 — currency-aware normalization**: WP3a (USD-preference + skip/diagnostic) then WP3b (FX conversion, rate by fact nature).
+- **WP-G — cross-cutting guards** (coverage-matrix test, ratio diagnostic, provenance assertion).
 
-Plus cross-cutting **guards** (WP-G) that ship with WP1.
+Every package below is part of this one phase; the ordering in §8 is the sequence to build and verify in, not a series of ship points.
 
 Nothing here changes the read-time derivation model, the period reconciler, or the IPC surface. The normalization engine is already taxonomy-agnostic (`orchestrator.rs` → `concept_map::metric_for(&f.taxonomy, &f.concept)`), so WP1 is pure data addition to one file.
 
@@ -268,17 +269,27 @@ No TypeScript changes for any WP (wire contract is unchanged — still USD micro
 
 ---
 
-## 8. Sequencing
+## 8. Build order within the single phase
+
+Everything ships in **one phase** (design §9). The diagram below is the *build-and-verify* sequence inside that phase — a single release at the end, not a chain of ship points.
 
 ```mermaid
 flowchart LR
-  WP1["WP1: IFRS coverage<br/>+ WP-G guards"] --> SHIP1["INFY un-blanked;<br/>coverage regressions caught"]
-  WP2["WP2: debt policy<br/>(approved)"] --> SHIP1
-  SHIP1 --> WP3a["WP3a: USD-preference<br/>+ skip/diagnostic"]
-  WP3a --> WP3b["WP3b: FX conversion<br/>via FxRateSource<br/>(flow=avg, stock=spot)"]
-  WP3b --> SHIP2["General FPI support:<br/>correct, converted, provenanced"]
+  subgraph PHASE["Single phase — one release"]
+    direction LR
+    WP1["WP1: IFRS coverage"] --> WP2["WP2: debt policy<br/>(borrowings only)"]
+    WP2 --> WP3a["WP3a: USD-preference<br/>+ skip/diagnostic"]
+    WP3a --> WP3b["WP3b: FX conversion<br/>via FxRateSource<br/>(flow=avg, stock=spot)"]
+    WPG["WP-G: guards<br/>(coverage, ratio, provenance)"] -.-> WP1
+  end
+  PHASE --> SHIP["INFY un-blanked +<br/>general FPI support:<br/>correct, converted, provenanced,<br/>coverage regressions caught"]
 ```
 
-All four packages ship **this cycle** (WP3b moved in 2026-07-11, design §9). The internal ordering still holds: WP1 + WP-G is the minimum to close the reported bug safely; WP2 is a one-line-per-arm change (lease policy signed off — borrowings only); WP3a establishes the USD-preference ladder that WP3b builds on. WP3b then converts the residual home-currency facts, unlocking issuers with no USD convenience translation. WP3a is a strict prerequisite for WP3b — the sibling-preference ladder decides *which* facts WP3b converts, and enforces the §4.2 consistency rule.
+The ordering is a build dependency, not a delivery boundary:
+- **WP1** is additive data and the minimum to un-blank INFY; the guards (**WP-G**) go in alongside it so coverage gaps trip immediately.
+- **WP2** is a one-line-per-arm change (lease policy signed off — borrowings only).
+- **WP3a** establishes the USD-preference ladder; **WP3b** builds directly on it. WP3a is a strict prerequisite for WP3b — the sibling-preference ladder decides *which* facts WP3b converts, and enforces the §4.2 consistency rule.
+
+All of the above is verified together and released as a single change set.
 
 **Implementation status:** not started — deferred at the product owner's request while another agent edits source files, to avoid write conflicts.

@@ -214,9 +214,9 @@ The `fx_rate` table stays a **pure daily-rate cache** (no schema change): the cl
 
 ### 6.4 Recommendation
 
-Ship **Option A + Option C** (they are cheap, and together they make the pipeline *honest* — correct for convenience-translation filers, loud-and-safe for everyone else) **and Option B** (FX conversion), which unlocks general FPI support. Sequencing and the FX-source choice are in the tech spec.
+Ship **Option A + Option C** (they are cheap, and together they make the pipeline *honest* — correct for convenience-translation filers, loud-and-safe for everyone else) **and Option B** (FX conversion), which unlocks general FPI support. The FX-source choice is in the tech spec.
 
-**Approved (2026-07-11, revised).** The layered resolution ladder (prefer USD → FX-convert with recorded provenance → skip + diagnostic) is the target architecture, with rate selection by fact nature (§6.5). WP3a (Options A + C) lands with WP1; **WP3b (Option B, FX conversion) is now in scope for this cycle** (moved in at the product owner's request) and follows WP3a.
+**Approved (2026-07-11, revised).** All three gaps are fixed in a **single phase** — there are no intermediate ship points. The layered resolution ladder (prefer USD → FX-convert with recorded provenance → skip + diagnostic) is the target architecture, with rate selection by fact nature (§6.5). WP1, WP2, WP3a, WP3b, and the guards (WP-G) all land together; the WP3a-before-WP3b relationship is an internal build order within the phase, not a separate release.
 
 ---
 
@@ -251,7 +251,7 @@ flowchart LR
 | 3 — Currency | **Full fix this cycle** | USD-preference + reject/diagnostic (Opts A+C) + FX conversion via `FxRateSource` (Opt B), rate selected by fact nature (§6.5) | **Approved — WP3a + WP3b both this cycle** |
 | Cross-cutting | **Fix now** | Four guards in §7 | **Approved** |
 
-The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference between "INFY works" and "IFRS filers work correctly and safely in general": Gap 1 is fixed immediately, Gap 2's policy is locked (leases are not debt) before any debt concept is mapped, and Gap 3 is fixed end-to-end this cycle — guards plus FX conversion (rate selected by fact nature, §6.5).
+**All four rows ship in one phase — no intermediate milestones.** The blank screen closes with Gap 1 alone, but Gaps 1–3 and the guards are delivered together: Gap 1 (IFRS coverage), Gap 2 (leases are not debt), and Gap 3 end-to-end (USD-preference + diagnostic + FX conversion, rate selected by fact nature, §6.5) all land in the same release. The WP1→WP2→WP3a→WP3b lettering denotes internal build order within the phase, not separate deliverables.
 
 ---
 
@@ -264,5 +264,6 @@ The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference betwee
 | 2026-07-11 | **Gap 3 (currency):** layered resolution ladder is the target architecture. WP3a (USD-preference + reject/diagnostic) ships with WP1. | Product owner |
 | 2026-07-11 (revised) | **Gap 3 (currency), scope change:** **WP3b (FX conversion) moved into this cycle.** Rate selection is by fact nature — closing spot rate for balance-sheet (stock) facts, period-average rate for income/cash-flow (flow) facts (§6.5), correcting the earlier "period-end for everything" simplification. | Product owner |
 | 2026-07-11 | **Guards (§7):** all four adopted and ship with WP1. | Product owner |
+| 2026-07-11 (revised) | **Single-phase delivery:** all gaps (WP1, WP2, WP3a, WP3b) and the guards (WP-G) are implemented and shipped in **one phase** — no intermediate milestones. WP letters denote internal build order only. | Product owner |
 
 **Implementation status:** not started. Deferred at the product owner's request while a separate agent is editing source files, to avoid write conflicts. This document and its companion tech spec are the authoritative record until implementation begins.
