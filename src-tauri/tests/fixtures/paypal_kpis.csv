@@ -1,0 +1,17 @@
+metric,period,value,unit,label
+tpv,FY2021,1245935000000,currency,Total Payment Volume
+tpv,FY2022,1358823000000,currency,Total Payment Volume
+tpv,FY2023,1530338000000,currency,Total Payment Volume
+tpv,FY2024,1682015000000,currency,Total Payment Volume
+payment_transactions,FY2021,19371000000,count,Payment Transactions
+payment_transactions,FY2022,22322000000,count,Payment Transactions
+payment_transactions,FY2023,24971000000,count,Payment Transactions
+payment_transactions,FY2024,26324000000,count,Payment Transactions
+active_accounts,FY2021,426000000,count,Active Accounts
+active_accounts,FY2022,435000000,count,Active Accounts
+active_accounts,FY2023,426000000,count,Active Accounts
+active_accounts,FY2024,434000000,count,Active Accounts
+txns_per_account,FY2021,45.47,number,Transactions per Account
+txns_per_account,FY2022,51.31,number,Transactions per Account
+txns_per_account,FY2023,58.61,number,Transactions per Account
+txns_per_account,FY2024,60.65,number,Transactions per Account
