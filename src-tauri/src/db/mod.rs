@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use crate::errors::RepoError;
 
 const INITIAL_SCHEMA: &str = include_str!("./migrations/V1__initial.sql");
+const V2_CUSTOM_METRICS_SCHEMA: &str = include_str!("./migrations/V2__custom_metrics.sql");
 
 /// Connection pool: one writer (mutex-protected) + a read pool.
 pub struct Pool {
@@ -49,6 +50,10 @@ impl Pool {
         // (See architecture §6.3 commentary: V1 ships only additive migrations.)
         writer
             .execute_batch(INITIAL_SCHEMA)
+            .map_err(|e| RepoError::Migration(e.to_string()))?;
+        // V2: custom metrics + CSV export. Additive; no changes to V1 tables.
+        writer
+            .execute_batch(V2_CUSTOM_METRICS_SCHEMA)
             .map_err(|e| RepoError::Migration(e.to_string()))?;
 
         // Reader pool

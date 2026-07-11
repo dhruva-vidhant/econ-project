@@ -1,6 +1,7 @@
 //! Persistence repositories — M06–M12.
 
 pub mod company;
+pub mod custom_metric;
 pub mod filing;
 pub mod period;
 pub mod raw_fact;

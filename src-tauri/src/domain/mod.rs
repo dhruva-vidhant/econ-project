@@ -9,8 +9,10 @@ mod metric;
 mod event;
 mod company;
 mod lineage;
+pub mod custom_metric;
 
 pub use company::*;
+pub use custom_metric::*;
 pub use event::*;
 pub use fact::*;
 pub use filing::*;
