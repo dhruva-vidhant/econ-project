@@ -1086,7 +1086,8 @@ The architecture has explicit seams for the V2/V3 directions in the PRD:
 | Multi-company comparison | Repository queries are already keyed by `cik`; UI introduces a new layer that joins multiple companies. No schema change. |
 | User-defined formulas | The derived-metric engine already accepts a registry; V2 adds a parser + sandboxed evaluator. |
 | Peer benchmarking | A `peer_group` table joins companies; the metric service gains a `for_peers` API. |
-| Export | A new `export/` module reads from `normalized_fact` and `derived_metric` and writes CSV/Excel/PDF. The data is unchanged. |
+| Export *(shipped in V2)* | `export/csv.rs` reads through the existing `ReadCtx`/repository layer (built-in metrics, statements, and custom metrics) and renders CSV; no schema change. Excel/PDF remain open for V3. |
+| Custom metrics *(shipped in V2)* | User-imported KPIs (`custom_metric`/`custom_metric_point` tables, `repos/custom_metric.rs`) live in a separate store from `raw_fact`/`normalized_fact` — they carry no lineage and are never written by the ingestion pipeline. Period alignment reuses `import/resolve.rs`'s `resolve_period`; a re-resolution hook (`pipeline::reresolve_custom_points`) realigns previously-unaligned points after each ingest/refresh, as new `Period` rows land. |
 | Plugin SDK | The stable Rust traits (`MetricProvider`, `SourceAdapter`, `MarketDataAdapter`) are already what the in-tree modules implement. The eventual loading mechanism (dynamic library, WebAssembly, or in-process Rust extension shipped as part of a plugin bundle) is a V3 design choice with non-trivial security and code-signing implications and is **not** decided in V1. |
 | Local LLM | The lineage and normalization layers already produce structured records that can be fed as context. |
 

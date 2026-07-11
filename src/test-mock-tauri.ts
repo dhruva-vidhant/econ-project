@@ -12,14 +12,24 @@ import type {
   AddCompanyResponse,
   Company,
   CurrentValuation,
+  CustomMetric,
+  CustomMetricPatch,
+  CustomMetricPoint,
+  CustomSeriesPoint,
   DashboardPayload,
+  ExportReport,
+  ExportRequest,
+  ImportOptions,
+  ImportReport,
   IngestionEvent,
   LineagePayload,
   MetricSeriesPoint,
+  NewCustomMetric,
   Period,
   Filing,
   RawFact,
   NormalizedFact,
+  UnitKind,
 } from "@/api/types";
 
 // ───────── In-memory state ─────────
@@ -31,6 +41,11 @@ type State = {
   lineage: Record<number, LineagePayload>;
   currentValuations: Record<string, CurrentValuation | null>;
   failAddTickers: Set<string>;
+  customMetrics: Record<string, CustomMetric[]>; // keyed by cik
+  customPoints: Record<number, CustomMetricPoint[]>; // keyed by custom_metric_id
+  nextCustomMetricId: number;
+  nextCustomPointId: number;
+  savedDialogPath: string | null; // stubbed native save-dialog response
 };
 
 const state: State = {
@@ -41,6 +56,11 @@ const state: State = {
   lineage: {},
   currentValuations: {},
   failAddTickers: new Set(["XYZNOPE", "BADTKR"]),
+  customMetrics: {},
+  customPoints: {},
+  nextCustomMetricId: 1,
+  nextCustomPointId: 1,
+  savedDialogPath: "/tmp/e2e-export.csv",
 };
 
 declare global {
@@ -48,10 +68,14 @@ declare global {
     __econMock: {
       reset: () => void;
       seedAaplFixture: () => void;
+      setOffline: (offline: boolean) => void;
+      setSaveDialogPath: (path: string | null) => void;
       state: State;
     };
   }
 }
+
+let offline = false;
 
 window.__econMock = {
   state,
@@ -62,9 +86,20 @@ window.__econMock = {
     state.dashboards = {};
     state.lineage = {};
     state.currentValuations = {};
+    state.customMetrics = {};
+    state.customPoints = {};
+    state.nextCustomMetricId = 1;
+    state.nextCustomPointId = 1;
+    offline = false;
   },
   seedAaplFixture() {
     seedAapl();
+  },
+  setOffline(value: boolean) {
+    offline = value;
+  },
+  setSaveDialogPath(path: string | null) {
+    state.savedDialogPath = path;
   },
 };
 
@@ -152,6 +187,11 @@ function seedAapl() {
   state.history["0000320193:Revenue:annual"] = seriesFor("Revenue", APPLE_REVENUE_ANNUAL, "annual");
   state.history["0000320193:NetIncome:annual"] = seriesFor("NetIncome", APPLE_NETINCOME_ANNUAL, "annual");
   state.history["0000320193:TotalAssets:annual"] = seriesFor("TotalAssets", APPLE_TOTAL_ASSETS_ANNUAL, "annual");
+  // `getMetricHistory` (used by the custom-metrics "Compare" builtin options)
+  // passes the lowercase `Metric` id, unlike the widget/drill-page callers
+  // above which historically used the display-cased key — alias both.
+  state.history["0000320193:revenue:annual"] = state.history["0000320193:Revenue:annual"];
+  state.history["0000320193:net_income:annual"] = state.history["0000320193:NetIncome:annual"];
   state.history["0000320193:Revenue:quarterly"] = APPLE_REVENUE_ANNUAL.flatMap((annual, i) => {
     const q1 = Math.round(annual * 0.30);
     const q2 = Math.round(annual * 0.22);
@@ -247,6 +287,155 @@ function seedAapl() {
   };
 }
 
+// ───────── Custom-metrics CSV import (mirrors src-tauri/src/import/csv.rs) ─────────
+
+function parseMockCsv(text: string): string[][] {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.split(",").map((f) => f.trim()));
+}
+
+function toMicro(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error("bad_value");
+  return Math.round(n * 1_000_000);
+}
+
+function importCustomMetricsCsvMock(cik: string, csvText: string, options: ImportOptions): ImportReport {
+  const report: ImportReport = { metrics_created: [], imported: 0, updated: 0, unaligned: 0, rejected: [] };
+  const rows = parseMockCsv(csvText);
+  const header = rows[0];
+  if (!header) return report;
+  const idx = (name: string) => header.findIndex((h) => h.toLowerCase() === name);
+  const metricIdx = idx("metric");
+  const periodIdx = idx("period");
+  const valueIdx = idx("value");
+  const unitIdx = idx("unit");
+  const labelIdx = idx("label");
+
+  const metrics = state.customMetrics[cik] ?? (state.customMetrics[cik] = []);
+
+  rows.slice(1).forEach((row, rowIndex) => {
+    const raw = row.join(",");
+    const metricStr = row[metricIdx];
+    const periodStr = row[periodIdx];
+    const valueStr = row[valueIdx];
+    if (!metricStr || !periodStr || !valueStr) {
+      report.rejected.push({ row_index: rowIndex, reason: "missing_column", raw });
+      return;
+    }
+    const key = metricStr.toLowerCase();
+    const unitToken = unitIdx >= 0 ? row[unitIdx] : undefined;
+    const label = labelIdx >= 0 ? row[labelIdx] : undefined;
+    const unitKind = (unitToken?.toLowerCase() as UnitKind | undefined) ?? options.default_unit;
+
+    let valueMicro: number;
+    try {
+      valueMicro = toMicro(valueStr);
+    } catch {
+      report.rejected.push({ row_index: rowIndex, reason: "bad_value", raw });
+      return;
+    }
+
+    let metric = metrics.find((m) => m.key === key);
+    if (!metric) {
+      metric = {
+        id: state.nextCustomMetricId++,
+        cik,
+        key,
+        label: label ?? key,
+        unit_kind: unitKind,
+        currency: unitKind === "currency" ? "USD" : null,
+        decimals: 2,
+        description: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      metrics.push(metric);
+      report.metrics_created.push(key);
+    }
+
+    const points = state.customPoints[metric.id] ?? (state.customPoints[metric.id] = []);
+    const fyMatch = /^FY(\d{4})$/.exec(periodStr);
+    if (!fyMatch) {
+      report.unaligned += 1;
+      points.push({
+        id: state.nextCustomPointId++,
+        custom_metric_id: metric.id,
+        period_id: null,
+        observed_date: periodStr,
+        value_micro: valueMicro,
+        source_note: "csv import",
+        imported_at: new Date().toISOString(),
+      });
+      return;
+    }
+    const fy = Number(fyMatch[1]);
+    const periodId = fy * 10; // matches makePeriod's annual id convention
+    const existing = points.find((p) => p.period_id === periodId);
+    if (existing) {
+      existing.value_micro = valueMicro;
+      report.updated += 1;
+    } else {
+      points.push({
+        id: state.nextCustomPointId++,
+        custom_metric_id: metric.id,
+        period_id: periodId,
+        observed_date: null,
+        value_micro: valueMicro,
+        source_note: "csv import",
+        imported_at: new Date().toISOString(),
+      });
+      report.imported += 1;
+    }
+  });
+
+  return report;
+}
+
+function customSeriesFor(metric: CustomMetric, kind: "annual" | "quarterly"): CustomSeriesPoint[] {
+  const points = state.customPoints[metric.id] ?? [];
+  return points
+    .filter((p) => p.period_id != null)
+    .map((p) => {
+      const fy = Math.floor(p.period_id! / 10);
+      return {
+        period: makePeriod(fy, kind === "annual" ? 0 : 4, kind),
+        value_micro: p.value_micro,
+        unit_kind: metric.unit_kind,
+        point_id: p.id,
+      };
+    });
+}
+
+function renderCsvMock(request: ExportRequest): string {
+  if (request.type === "custom_metric_series") {
+    const metric = Object.values(state.customMetrics)
+      .flat()
+      .find((m) => m.id === request.metric_id);
+    if (!metric) throw mkErr("not_found", `custom metric ${request.metric_id} not found`);
+    const rows = customSeriesFor(metric, request.kind);
+    const lines = ["period,value"];
+    for (const r of rows) {
+      const label = r.period.kind === "quarterly" ? `FY${r.period.fiscal_year} Q${r.period.fiscal_quarter}` : `FY${r.period.fiscal_year}`;
+      lines.push(`${label},${(r.value_micro / 1_000_000).toFixed(metric.decimals)}`);
+    }
+    return lines.join("\n") + "\n";
+  }
+  if (request.type === "metric_series") {
+    const rows = state.history[`${request.cik}:${request.metric}:${request.kind}`] ?? [];
+    const lines = ["period,value"];
+    for (const r of rows) {
+      const label = r.period.kind === "quarterly" ? `FY${r.period.fiscal_year} Q${r.period.fiscal_quarter}` : `FY${r.period.fiscal_year}`;
+      lines.push(`${label},${(r.value / 1_000_000).toFixed(2)}`);
+    }
+    return lines.join("\n") + "\n";
+  }
+  // "comparison" and "statement" render as a minimal but non-empty CSV for E2E smoke purposes.
+  return "period,value\nFY2024,0\n";
+}
+
 // ───────── IPC mock dispatcher ─────────
 
 mockIPC(async (cmd, args) => {
@@ -254,9 +443,14 @@ mockIPC(async (cmd, args) => {
   switch (cmd) {
     case "ping":
       return { message: "pong", version: "1.0.0" };
+    case "plugin:dialog|save":
+      return state.savedDialogPath;
     case "list_companies":
       return state.companies;
     case "add_company": {
+      // Ingestion hits real SEC EDGAR — the only command that actually
+      // requires network, so it's the one gated by the offline flag.
+      if (offline) throw mkErr("network_error", "network is disabled (offline mode)");
       const ticker = String(a.ticker ?? "").toUpperCase();
       if (!ticker) throw mkErr("invalid_input", "ticker cannot be empty");
       if (state.failAddTickers.has(ticker)) throw mkErr("unknown_ticker", `ticker ${ticker} not found in SEC ticker map`);
@@ -328,6 +522,99 @@ mockIPC(async (cmd, args) => {
         cur.price_as_of = new Date().toISOString();
       }
       return state.currentValuations[cik] ?? null;
+    }
+    case "list_custom_metrics": {
+      const cik = String(a.cik);
+      return state.customMetrics[cik] ?? [];
+    }
+    case "create_custom_metric": {
+      const cik = String(a.cik);
+      const def = a.def as NewCustomMetric;
+      const metrics = state.customMetrics[cik] ?? (state.customMetrics[cik] = []);
+      const metric: CustomMetric = {
+        id: state.nextCustomMetricId++,
+        cik,
+        key: def.key,
+        label: def.label,
+        unit_kind: def.unit_kind,
+        currency: def.currency ?? (def.unit_kind === "currency" ? "USD" : null),
+        decimals: def.decimals ?? 2,
+        description: def.description ?? null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      metrics.push(metric);
+      return metric;
+    }
+    case "update_custom_metric": {
+      const id = Number(a.id);
+      const patch = a.patch as CustomMetricPatch;
+      const metric = Object.values(state.customMetrics).flat().find((m) => m.id === id);
+      if (!metric) throw mkErr("not_found", `custom metric ${id} not found`);
+      Object.assign(metric, patch, { updated_at: new Date().toISOString() });
+      return metric;
+    }
+    case "delete_custom_metric": {
+      const id = Number(a.id);
+      for (const cik of Object.keys(state.customMetrics)) {
+        state.customMetrics[cik] = state.customMetrics[cik].filter((m) => m.id !== id);
+      }
+      delete state.customPoints[id];
+      return null;
+    }
+    case "count_custom_points": {
+      const id = Number(a.id);
+      return (state.customPoints[id] ?? []).length;
+    }
+    case "get_custom_metric_series": {
+      const metricId = Number(a.metricId);
+      const kind = a.kind as "annual" | "quarterly";
+      const metric = Object.values(state.customMetrics).flat().find((m) => m.id === metricId);
+      if (!metric) return [];
+      return customSeriesFor(metric, kind);
+    }
+    case "upsert_custom_metric_point": {
+      const metricId = Number(a.metricId);
+      const period = String(a.period);
+      const value = String(a.value);
+      const metric = Object.values(state.customMetrics).flat().find((m) => m.id === metricId);
+      if (!metric) throw mkErr("not_found", `custom metric ${metricId} not found`);
+      const points = state.customPoints[metricId] ?? (state.customPoints[metricId] = []);
+      const fyMatch = /^FY(\d{4})$/.exec(period);
+      const point: CustomMetricPoint = {
+        id: state.nextCustomPointId++,
+        custom_metric_id: metricId,
+        period_id: fyMatch ? Number(fyMatch[1]) * 10 : null,
+        observed_date: fyMatch ? null : period,
+        value_micro: toMicro(value),
+        source_note: "manual",
+        imported_at: new Date().toISOString(),
+      };
+      points.push(point);
+      return point;
+    }
+    case "delete_custom_metric_point": {
+      const pointId = Number(a.pointId);
+      for (const metricId of Object.keys(state.customPoints)) {
+        state.customPoints[Number(metricId)] = state.customPoints[Number(metricId)].filter((p) => p.id !== pointId);
+      }
+      return null;
+    }
+    case "import_custom_metrics_csv": {
+      const cik = String(a.cik);
+      const csvText = String(a.csvText);
+      const options = a.options as ImportOptions;
+      return importCustomMetricsCsvMock(cik, csvText, options);
+    }
+    case "render_csv": {
+      return renderCsvMock(a.request as ExportRequest);
+    }
+    case "export_csv": {
+      const request = a.request as ExportRequest;
+      const destPath = String(a.destPath);
+      const text = renderCsvMock(request);
+      const rows = text.split("\n").filter(Boolean).length - 1;
+      return { rows, bytes: text.length, path: destPath } as ExportReport;
     }
     default:
       throw mkErr("internal", `mock harness has no handler for command: ${cmd}`);

@@ -985,7 +985,7 @@ Recommended:
 
 # 15.1 V2 Enhancements
 
-## Custom Metrics & Export *(specified — see `docs/custom-metrics-prd.md`)*
+## Custom Metrics & Export *(shipped — see `docs/custom-metrics-prd.md`)*
 
 - **Custom metrics (user-imported KPIs)** — per-company, user-supplied business
   indicators (e.g. PayPal's Total Payment Volume, active accounts), imported via
