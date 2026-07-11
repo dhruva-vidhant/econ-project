@@ -79,6 +79,8 @@ export function useRefreshCompany() {
       qc.invalidateQueries({ queryKey: QK.companies });
       qc.invalidateQueries({ queryKey: QK.dashboard(data.company.cik) });
       qc.invalidateQueries({ queryKey: QK.events(data.company.cik) });
+      qc.invalidateQueries({ queryKey: ["metricHistory", data.company.cik] });
+      qc.invalidateQueries({ queryKey: QK.currentValuation(data.company.cik) });
     },
   });
 }
