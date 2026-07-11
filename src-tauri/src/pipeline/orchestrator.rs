@@ -10,10 +10,12 @@ use crate::domain::{
     AccessionNo, Cik, Company, DerivedMetric, Filing, FormType, IngestionEvent, Metric,
     NormalizedFact, Period, PeriodKind, RawFact, Severity, Ticker,
 };
-use crate::errors::{PipelineError, SourceError};
+use crate::errors::{PipelineError, RepoError, SourceError};
+use crate::import::resolve::{resolve_period, Resolution};
 use crate::normalize::{concept_map, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
 use crate::repos::current_price::CurrentPriceRepo;
+use crate::repos::custom_metric::CustomMetricRepo;
 use crate::repos::derived_metric::DerivedMetricRepo;
 use crate::repos::filing::FilingRepo;
 use crate::repos::historical_price::HistoricalPriceRepo;
@@ -346,6 +348,42 @@ pub async fn ingest_company(
     Ok((company, summary))
 }
 
+/// Re-resolve a company's unaligned custom-metric points against its
+/// (possibly newly ingested) periods. See techspec §5. Called from the IPC
+/// layer after `ingest_company` returns, rather than threaded through
+/// `IngestionDeps`, so the authoritative pipeline struct and its existing
+/// integration tests stay untouched — this is a satellite step, not part of
+/// the fact-persistence chain itself.
+///
+/// A stored point carries no `granularity` column (see
+/// `db/migrations/V2__custom_metrics.sql`), so it is inferred by trying
+/// `Annual` first and falling back to `Quarterly`. Fiscal-label tokens
+/// (`"FY2024 Q2"`) self-disambiguate via `resolve_period`'s quarter
+/// detection regardless of which granularity is passed in; only bare dates
+/// depend on this ordering, and annual is the more common case for custom
+/// KPIs.
+pub async fn reresolve_custom_points(
+    periods_repo: &dyn PeriodRepo,
+    custom_metrics: &dyn CustomMetricRepo,
+    cik: &Cik,
+) -> Result<usize, RepoError> {
+    let periods = periods_repo.list_for_cik(cik, None).await?;
+    let unaligned = custom_metrics.points_unaligned(cik).await?;
+    let mut realigned = 0usize;
+    for point in unaligned {
+        let Some(token) = point.observed_date.as_deref() else { continue };
+        let resolution = match resolve_period(token, PeriodKind::Annual, &periods) {
+            Resolution::Unaligned => resolve_period(token, PeriodKind::Quarterly, &periods),
+            other => other,
+        };
+        if let Resolution::Matched(period_id) = resolution {
+            custom_metrics.realign_point(point.id, period_id).await?;
+            realigned += 1;
+        }
+    }
+    Ok(realigned)
+}
+
 /// Fetch end-of-day closes for each distinct period end-date and persist one
 /// `historical_price` row per date, resolved to the nearest prior trading day
 /// (so a fiscal close that lands on a weekend or holiday still gets a price).
@@ -571,5 +609,86 @@ mod tests {
     fn other_metrics_keep_sign() {
         assert_eq!(apply_sign(Metric::Revenue, 1_500_000), 1_500_000);
         assert_eq!(apply_sign(Metric::NetIncome, -100_000), -100_000);
+    }
+
+    #[tokio::test]
+    async fn reresolution_on_refresh() {
+        use crate::db::Pool;
+        use crate::domain::{Company, NewCustomMetric, Ticker, UnitKind};
+        use crate::repos::company::{CompanyRepo, SqliteCompanyRepo};
+        use crate::repos::custom_metric::SqliteCustomMetricRepo;
+        use crate::repos::period::SqlitePeriodRepo;
+        use chrono::{NaiveDate, TimeZone, Utc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = std::sync::Arc::new(Pool::open(&dir.path().join("test.sqlite")).unwrap());
+
+        let cik = Cik("0000000001".into());
+        let companies = SqliteCompanyRepo::new(pool.clone());
+        companies
+            .upsert(&Company {
+                cik: cik.clone(),
+                ticker: Ticker("TEST".into()),
+                name: "Test Co".into(),
+                exchange: None,
+                sic: None,
+                fiscal_year_end: Some("1231".into()),
+                added_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                last_refreshed: None,
+            })
+            .await
+            .unwrap();
+
+        let periods = SqlitePeriodRepo::new(pool.clone());
+        let custom_metrics = SqliteCustomMetricRepo::new(pool.clone());
+        let metric = custom_metrics
+            .create(
+                &cik,
+                &NewCustomMetric {
+                    key: "tpv".into(),
+                    label: "Total Payment Volume".into(),
+                    unit_kind: UnitKind::Currency,
+                    currency: Some("USD".into()),
+                    decimals: Some(2),
+                    description: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Import a point dated in a not-yet-ingested period: unaligned.
+        let pt = custom_metrics
+            .upsert_point(metric.id, None, Some("2024-06-01"), 1_000_000, Some("manual"))
+            .await
+            .unwrap();
+        assert_eq!(custom_metrics.points_unaligned(&cik).await.unwrap().len(), 1);
+
+        let n = reresolve_custom_points(&periods, &custom_metrics, &cik).await.unwrap();
+        assert_eq!(n, 0, "still unaligned — no matching period ingested yet");
+
+        // Add the period (simulating a refresh that ingests FY2024) and rerun the hook.
+        let period_id = periods
+            .upsert_returning_id(&Period {
+                id: 0,
+                cik: cik.clone(),
+                fiscal_year: 2024,
+                fiscal_quarter: 0,
+                fiscal_year_end: "1231".into(),
+                start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+                end_date: NaiveDate::from_ymd_opt(2024, 12, 31).unwrap(),
+                kind: PeriodKind::Annual,
+                is_53_week: false,
+            })
+            .await
+            .unwrap();
+
+        let n = reresolve_custom_points(&periods, &custom_metrics, &cik).await.unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(custom_metrics.points_unaligned(&cik).await.unwrap().len(), 0);
+
+        let aligned = custom_metrics.points_aligned(metric.id, PeriodKind::Annual).await.unwrap();
+        assert_eq!(aligned.len(), 1);
+        assert_eq!(aligned[0].1.id, pt.id);
+        assert_eq!(aligned[0].0.id, period_id);
     }
 }

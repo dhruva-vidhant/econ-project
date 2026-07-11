@@ -20,4 +20,4 @@
 
 pub mod orchestrator;
 
-pub use orchestrator::{ingest_company, IngestionDeps, IngestionSummary};
+pub use orchestrator::{ingest_company, reresolve_custom_points, IngestionDeps, IngestionSummary};

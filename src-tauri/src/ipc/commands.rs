@@ -6,7 +6,7 @@ use tauri::State;
 use crate::derived::series::{self, CurrentValuation, MetricSeriesPoint};
 use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, PeriodKind, Ticker};
 use crate::errors::AppError;
-use crate::pipeline::{ingest_company, IngestionSummary};
+use crate::pipeline::{ingest_company, reresolve_custom_points, IngestionSummary};
 use crate::repos::company::CompanyRepo;
 use crate::repos::current_price::CurrentPriceRepo;
 use crate::repos::filing::FilingRepo;
@@ -39,6 +39,7 @@ pub async fn add_company(
     }
     let deps = state.pipeline_deps();
     let (company, summary) = ingest_company(&deps, &t).await?;
+    reresolve_custom_points(state.periods.as_ref(), state.custom_metrics.as_ref(), &company.cik).await?;
     Ok(AddCompanyResponse { company, summary })
 }
 
@@ -163,6 +164,7 @@ pub async fn refresh_company(
         .ok_or_else(|| AppError::not_found(format!("company {cik} not found")))?;
     let deps = state.pipeline_deps();
     let (company2, summary) = ingest_company(&deps, &company.ticker).await?;
+    reresolve_custom_points(state.periods.as_ref(), state.custom_metrics.as_ref(), &company2.cik).await?;
     Ok(AddCompanyResponse { company: company2, summary })
 }
 
