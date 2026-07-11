@@ -1,8 +1,19 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
+import DownloadCsvButton from "@/components/DownloadCsvButton";
 import { fmtMetricValue, prettyMetric } from "@/api/types";
 import { useCompanies, useMetricHistory } from "@/state/queries";
+
+// The frontend's statement-page routing uses "cashflow" (no underscore);
+// the export backend's ExportRequest::Statement.statement expects
+// "cash_flow" (techspec §7.3) — translate at the export-request boundary
+// only, so the route/URL convention doesn't need to change.
+const EXPORT_STATEMENT_KEY: Record<string, "income" | "balance" | "cash_flow"> = {
+  income: "income",
+  balance: "balance",
+  cashflow: "cash_flow",
+};
 
 const STATEMENT_METRICS: Record<string, string[]> = {
   income: [
@@ -38,7 +49,7 @@ export default function StatementPage() {
         <Link to={`/c/${ticker}`} className="font-mono text-lg hover:text-accent">{ticker}</Link>
         <span className="text-muted">/</span>
         <span className="font-semibold capitalize">{stmtKind} statement</span>
-        <div className="ml-auto inline-flex gap-2">
+        <div className="ml-auto flex items-center gap-2">
           <div className="inline-flex rounded border border-border/60 text-xs">
             {(["income", "balance", "cashflow", "valuation"] as const).map((k) => (
               <button
@@ -61,6 +72,17 @@ export default function StatementPage() {
               </button>
             ))}
           </div>
+          {company && EXPORT_STATEMENT_KEY[stmtKind] && (
+            <DownloadCsvButton
+              request={{
+                type: "statement",
+                cik: company.cik,
+                statement: EXPORT_STATEMENT_KEY[stmtKind],
+                kind: periodKind,
+              }}
+              defaultFilename={`${ticker}_${stmtKind}_${periodKind}.csv`}
+            />
+          )}
         </div>
       </header>
 

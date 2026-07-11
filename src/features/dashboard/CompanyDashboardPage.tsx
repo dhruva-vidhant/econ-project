@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
 import CurrentValuationCard from "@/features/dashboard/CurrentValuationCard";
+import CustomMetricsPanel from "@/features/custom-metrics/CustomMetricsPanel";
 import { fmtMetricValue, prettyMetric } from "@/api/types";
 import {
   useCompanies,
@@ -125,6 +126,10 @@ export default function CompanyDashboardPage() {
               />
             ))}
           </div>
+        </section>
+
+        <section className="mb-6">
+          <CustomMetricsPanel cik={company.cik} ticker={company.ticker} />
         </section>
 
         <section>

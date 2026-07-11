@@ -8,6 +8,8 @@ import CustomMetricsPanel from "./CustomMetricsPanel";
 
 vi.mock("@/api/client", () => ({
   listCustomMetrics: vi.fn(),
+  getMetricHistory: vi.fn().mockResolvedValue([]),
+  getCustomMetricSeries: vi.fn().mockResolvedValue([]),
 }));
 
 import * as api from "@/api/client";
@@ -34,7 +36,7 @@ describe("CustomMetricsPanel", () => {
   it("renders a persistent 'user data' badge and no lineage-drawer trigger", async () => {
     vi.mocked(api.listCustomMetrics).mockResolvedValue([FIXTURE_METRIC]);
 
-    renderWithClient(<CustomMetricsPanel cik="0000000001" />);
+    renderWithClient(<CustomMetricsPanel cik="0000000001" ticker="TEST" />);
 
     expect(await screen.findByText("user data")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("tpv")).toBeInTheDocument());
@@ -47,7 +49,7 @@ describe("CustomMetricsPanel", () => {
   it("shows an empty state when there are no custom metrics", async () => {
     vi.mocked(api.listCustomMetrics).mockResolvedValue([]);
 
-    renderWithClient(<CustomMetricsPanel cik="0000000001" />);
+    renderWithClient(<CustomMetricsPanel cik="0000000001" ticker="TEST" />);
 
     expect(await screen.findByText(/No custom metrics yet/i)).toBeInTheDocument();
     expect(screen.getByText("user data")).toBeInTheDocument();

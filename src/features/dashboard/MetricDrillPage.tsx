@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import DownloadCsvButton from "@/components/DownloadCsvButton";
 import LineageDrawer from "@/components/LineageDrawer";
 import MetricChart from "@/components/MetricChart";
 import { fmtMetricValue, prettyMetric } from "@/api/types";
@@ -36,16 +37,24 @@ export default function MetricDrillPage() {
           <Link to={`/c/${ticker}`} className="font-mono text-lg hover:text-accent">{ticker}</Link>
           <span className="text-muted">/</span>
           <span className="text-base font-semibold">{label}</span>
-          <div className="ml-auto inline-flex rounded border border-border/60 text-xs">
-            {(["annual", "quarterly"] as const).map((k) => (
-              <button
-                key={k}
-                onClick={() => setKind(k)}
-                className={`px-3 py-1 ${kind === k ? "bg-accent/20 text-text" : "text-muted hover:text-text"}`}
-              >
-                {k}
-              </button>
-            ))}
+          <div className="ml-auto flex items-center gap-2">
+            <div className="inline-flex rounded border border-border/60 text-xs">
+              {(["annual", "quarterly"] as const).map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setKind(k)}
+                  className={`px-3 py-1 ${kind === k ? "bg-accent/20 text-text" : "text-muted hover:text-text"}`}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+            {company && metric && (
+              <DownloadCsvButton
+                request={{ type: "metric_series", cik: company.cik, metric, kind }}
+                defaultFilename={`${ticker}_${metric}_${kind}.csv`}
+              />
+            )}
           </div>
         </header>
 

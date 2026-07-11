@@ -1,7 +1,7 @@
 import ReactECharts from "echarts-for-react";
 
-import { fmtUsdCompact, isRatioMetric, microToPercent, microToUsd } from "@/api/types";
-import type { MetricSeriesPoint } from "@/api/types";
+import { fmtCustomValue, fmtUsdCompact, isRatioMetric, microToPercent, microToUsd } from "@/api/types";
+import type { MetricSeriesPoint, UnitKind } from "@/api/types";
 
 interface Props {
   series: MetricSeriesPoint[];
@@ -9,11 +9,16 @@ interface Props {
   height?: number;
   /** Metric id — drives unit-aware (USD vs percentage) axis/tooltip formatting. */
   metric?: string;
+  /** Custom-metric unit kind (§9.2) — overrides `metric`-based ratio detection
+   * when charting a custom series, which has no built-in `Metric` id. */
+  unitKind?: UnitKind;
+  /** Decimals for `unitKind="number"` formatting. */
+  decimals?: number;
 }
 
 /** Time-series line chart for a single metric (M38). */
-export default function MetricChart({ series, title, height = 320, metric }: Props) {
-  const ratio = isRatioMetric(metric ?? "");
+export default function MetricChart({ series, title, height = 320, metric, unitKind, decimals = 2 }: Props) {
+  const ratio = unitKind ? unitKind === "ratio" : isRatioMetric(metric ?? "");
   if (series.length === 0) {
     return (
       <div
@@ -31,6 +36,12 @@ export default function MetricChart({ series, title, height = 320, metric }: Pro
       : `FY${p.period.fiscal_year}`,
   );
   const data = series.map((p) => (ratio ? microToPercent(p.value) : microToUsd(p.value)));
+  const formatValue = (raw: number) => {
+    if (unitKind === "count" || unitKind === "number") {
+      return fmtCustomValue(unitKind, raw * 1_000_000, decimals);
+    }
+    return ratio ? `${raw.toFixed(1)}%` : fmtUsdCompact(raw * 1_000_000);
+  };
 
   const option = {
     backgroundColor: "transparent",
@@ -41,8 +52,7 @@ export default function MetricChart({ series, title, height = 320, metric }: Pro
       trigger: "axis",
       formatter: (params: { axisValue: string; data: number }[]) => {
         const p = params[0];
-        const label = ratio ? `${p.data.toFixed(1)}%` : fmtUsdCompact(p.data * 1_000_000);
-        return `${p.axisValue}: ${label}`;
+        return `${p.axisValue}: ${formatValue(p.data)}`;
       },
       backgroundColor: "rgba(22,25,32,0.95)",
       borderColor: "#242933",
@@ -62,8 +72,7 @@ export default function MetricChart({ series, title, height = 320, metric }: Pro
       axisLabel: {
         color: "#8c95a8",
         fontSize: 11,
-        formatter: (v: number) =>
-          ratio ? `${v.toFixed(0)}%` : fmtUsdCompact(v * 1_000_000).replace("$", ""),
+        formatter: (v: number) => formatValue(v).replace("$", ""),
       },
     },
     series: [
