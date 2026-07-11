@@ -3,10 +3,17 @@ import type {
   AddCompanyResponse,
   Company,
   CurrentValuation,
+  CustomMetric,
+  CustomMetricPatch,
+  CustomMetricPoint,
+  CustomSeriesPoint,
   DashboardPayload,
+  ImportOptions,
+  ImportReport,
   IngestionEvent,
   LineagePayload,
   MetricSeriesPoint,
+  NewCustomMetric,
 } from "@/api/types";
 
 /**
@@ -63,4 +70,59 @@ export async function getCurrentValuation(cik: string): Promise<CurrentValuation
 
 export async function refreshPrice(cik: string): Promise<CurrentValuation | null> {
   return invoke("refresh_price", { cik });
+}
+
+export async function listCustomMetrics(cik: string): Promise<CustomMetric[]> {
+  return invoke("list_custom_metrics", { cik });
+}
+
+export async function createCustomMetric(
+  cik: string,
+  def: NewCustomMetric,
+): Promise<CustomMetric> {
+  return invoke("create_custom_metric", { cik, def });
+}
+
+export async function updateCustomMetric(
+  id: number,
+  patch: CustomMetricPatch,
+): Promise<CustomMetric> {
+  return invoke("update_custom_metric", { id, patch });
+}
+
+export async function deleteCustomMetric(id: number): Promise<void> {
+  return invoke("delete_custom_metric", { id });
+}
+
+export async function countCustomPoints(id: number): Promise<number> {
+  return invoke("count_custom_points", { id });
+}
+
+export async function getCustomMetricSeries(
+  cik: string,
+  metricId: number,
+  kind: "annual" | "quarterly",
+): Promise<CustomSeriesPoint[]> {
+  return invoke("get_custom_metric_series", { cik, metricId, kind });
+}
+
+export async function upsertCustomMetricPoint(
+  metricId: number,
+  period: string,
+  kind: "annual" | "quarterly",
+  value: string,
+): Promise<CustomMetricPoint> {
+  return invoke("upsert_custom_metric_point", { metricId, period, kind, value });
+}
+
+export async function deleteCustomMetricPoint(pointId: number): Promise<void> {
+  return invoke("delete_custom_metric_point", { pointId });
+}
+
+export async function importCustomMetricsCsv(
+  cik: string,
+  csvText: string,
+  options: ImportOptions,
+): Promise<ImportReport> {
+  return invoke("import_custom_metrics_csv", { cik, csvText, options });
 }

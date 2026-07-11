@@ -5,13 +5,15 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::domain::{parse_micro, Cik, NewCustomMetric, Period, PeriodKind, UnitKind};
 use crate::errors::RepoError;
 use crate::repos::custom_metric::CustomMetricRepo;
 
 use super::resolve::{resolve_period, Resolution};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportOptions {
     pub granularity: PeriodKind,
     pub default_unit: UnitKind,
@@ -23,14 +25,14 @@ impl Default for ImportOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRowResultDetail {
     pub row_index: usize,
     pub reason: String,
     pub raw: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportReport {
     pub metrics_created: Vec<String>,
     pub imported: u32,

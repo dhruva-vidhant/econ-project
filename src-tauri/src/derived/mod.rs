@@ -11,6 +11,7 @@
 //! exhaustively unit-test the formulas independently of any database, which is
 //! where accuracy regressions are easiest to catch.
 
+pub mod custom_series;
 pub mod series;
 
 /// Free cash flow `= net_income + depreciation_amortization − capital_expenditures`.

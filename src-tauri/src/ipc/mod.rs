@@ -13,6 +13,7 @@ use crate::errors::AppError;
 
 mod state;
 mod commands;
+mod custom_metrics_commands;
 
 pub use state::AppState;
 
@@ -52,5 +53,14 @@ pub fn handler<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + 
         commands::get_lineage,
         commands::get_current_valuation,
         commands::refresh_price,
+        custom_metrics_commands::list_custom_metrics,
+        custom_metrics_commands::create_custom_metric,
+        custom_metrics_commands::update_custom_metric,
+        custom_metrics_commands::delete_custom_metric,
+        custom_metrics_commands::count_custom_points,
+        custom_metrics_commands::get_custom_metric_series,
+        custom_metrics_commands::upsert_custom_metric_point,
+        custom_metrics_commands::delete_custom_metric_point,
+        custom_metrics_commands::import_custom_metrics_csv,
     ]
 }

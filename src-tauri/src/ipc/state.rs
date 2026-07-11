@@ -8,6 +8,7 @@ use crate::db::Pool;
 use crate::pipeline::IngestionDeps;
 use crate::repos::company::SqliteCompanyRepo;
 use crate::repos::current_price::SqliteCurrentPriceRepo;
+use crate::repos::custom_metric::SqliteCustomMetricRepo;
 use crate::repos::derived_metric::SqliteDerivedMetricRepo;
 use crate::repos::filing::SqliteFilingRepo;
 use crate::repos::ingestion_event::SqliteIngestionEventRepo;
@@ -29,6 +30,7 @@ pub struct AppState {
     pub prices: Arc<SqliteHistoricalPriceRepo>,
     pub current_prices: Arc<SqliteCurrentPriceRepo>,
     pub events: Arc<SqliteIngestionEventRepo>,
+    pub custom_metrics: Arc<SqliteCustomMetricRepo>,
     pub sec: Arc<SecClient>,
     pub market_data: Arc<YahooMarketData>,
 }
@@ -61,6 +63,7 @@ impl AppState {
             prices: Arc::new(SqliteHistoricalPriceRepo::new(pool.clone())),
             current_prices: Arc::new(SqliteCurrentPriceRepo::new(pool.clone())),
             events: Arc::new(SqliteIngestionEventRepo::new(pool.clone())),
+            custom_metrics: Arc::new(SqliteCustomMetricRepo::new(pool.clone())),
             sec,
             market_data,
             pool,

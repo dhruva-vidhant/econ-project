@@ -227,6 +227,107 @@ export function fmtUsdCompact(micro: number): string {
   return `${v < 0 ? "-" : ""}$${abs.toFixed(2)}`;
 }
 
+// V2: custom metrics + CSV export. Separate from the authoritative Metric
+// catalog — user-supplied data, never enters normalization/lineage.
+export type UnitKind = "currency" | "count" | "ratio" | "number";
+
+export interface CustomMetric {
+  id: number;
+  cik: Cik;
+  key: string;
+  label: string;
+  unit_kind: UnitKind;
+  currency?: string | null;
+  decimals: number;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomMetricPoint {
+  id: number;
+  custom_metric_id: number;
+  period_id?: number | null;
+  observed_date?: string | null;
+  value_micro: number;
+  source_note?: string | null;
+  imported_at: string;
+}
+
+export interface CustomSeriesPoint {
+  period: Period;
+  value_micro: number;
+  unit_kind: UnitKind;
+  point_id: number;
+}
+
+export interface NewCustomMetric {
+  key: string;
+  label: string;
+  unit_kind: UnitKind;
+  currency?: string | null;
+  decimals?: number;
+  description?: string | null;
+}
+
+export interface CustomMetricPatch {
+  label?: string | null;
+  unit_kind?: UnitKind | null;
+  currency?: string | null;
+  decimals?: number | null;
+  description?: string | null;
+}
+
+export interface ImportOptions {
+  granularity: PeriodKind;
+  default_unit: UnitKind;
+}
+
+export interface ImportRowResultDetail {
+  row_index: number;
+  reason: string;
+  raw: string;
+}
+
+export interface ImportReport {
+  metrics_created: string[];
+  imported: number;
+  updated: number;
+  unaligned: number;
+  rejected: ImportRowResultDetail[];
+}
+
+/** Format a custom-metric micro value per its unit kind. */
+export function fmtCustomValue(unitKind: UnitKind, micro: number, decimals: number): string {
+  switch (unitKind) {
+    case "currency":
+      return fmtUsdCompact(micro);
+    case "ratio":
+      return fmtPercent(micro);
+    case "count":
+      return Math.round(microToUsd(micro)).toLocaleString();
+    case "number":
+      return microToUsd(micro).toFixed(decimals);
+  }
+}
+
+export interface SeriesRef {
+  source: "builtin" | "custom";
+  key: string;
+}
+
+export type ExportRequest =
+  | { type: "metric_series"; cik: string; metric: string; kind: PeriodKind }
+  | { type: "custom_metric_series"; cik: string; metric_id: number; kind: PeriodKind }
+  | { type: "comparison"; cik: string; series: SeriesRef[]; kind: PeriodKind }
+  | { type: "statement"; cik: string; statement: "income" | "balance" | "cash_flow"; kind: PeriodKind };
+
+export interface ExportReport {
+  rows: number;
+  bytes: number;
+  path: string;
+}
+
 export interface CurrentValuation {
   price_micro: number;
   price_as_of: string;
