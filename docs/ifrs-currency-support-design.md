@@ -158,7 +158,7 @@ The `require_usd` guard on the **market-data** adapter (`market_data.rs:106`) al
 
 **Option A — USD-preference candidate selection.** When a concept is tagged in multiple currencies for a period, prefer the USD-unit fact and drop non-USD when a USD sibling exists. Cheap; fully fixes convenience-translation filers (INFY) and prevents accidental home-currency pickup. **Does not** help pure-foreign-currency filers.
 
-**Option B — FX conversion at normalization.** *(The durable fix.)* For a monetary fact whose currency ≠ USD, convert to USD using an FX rate as-of the period end, store the converted value, and record provenance in the **existing** columns (`original_value`, `original_unit`, `fx_rate_micro`, `fx_rate_source`, `fx_rate_date`). Requires an `FxRateSource` and populating the `fx_rate` table.
+**Option B — FX conversion at normalization.** *(The durable fix.)* For a monetary fact whose currency ≠ USD, convert to USD **using a rate matched to the fact's nature** (§6.5), store the converted value, and record provenance in the **existing** columns (`original_value`, `original_unit`, `fx_rate_micro`, `fx_rate_source`, `fx_rate_date`). Requires an `FxRateSource` and populating the `fx_rate` table.
 
 **Option C — reject + diagnostic.** If a monetary fact is non-USD and cannot be converted, **skip it and emit a WARN ingestion event** rather than store a mislabelled number. This is the accuracy-preserving floor and aligns with the project's hard-accuracy rule.
 
@@ -186,14 +186,37 @@ flowchart TD
 Supporting structural changes:
 1. **Treat currency as first-class.** `raw_fact.unit` already carries it; stop assuming USD downstream. The quarterly branch must stop hardcoding `unit: "USD"` and instead flow the resolved currency.
 2. **Split `scale_to_micro`'s two responsibilities** — "is this monetary?" (scale ×10⁶) vs. "which currency is it?" (drives resolution). Scaling stays; currency detection becomes explicit.
-3. **`FxRateSource` trait** feeding the `fx_rate` table, mirroring the existing `MarketDataSource` adapter shape. Rate keyed by (currency, date); resolution uses the period-end date.
+3. **`FxRateSource` trait** feeding the `fx_rate` table (a daily-rate cache), mirroring the existing `MarketDataSource` adapter shape. Rate keyed by (currency, date); the rate *selection* is by fact nature (§6.5), not a single fixed date.
 4. **Provenance is mandatory** whenever a value is FX-converted: the converted USD value is the fact; `original_value`/`original_unit`/`fx_rate_*` record how we got there, upholding the product's auditability principle.
+
+### 6.5 Rate selection — match the rate to the fact (IAS 21 / ASC 830)
+
+A single "period-end rate for everything" is **incorrect** for the income statement: applying one day's rate to a full year of revenue misstates it. Presentation-currency translation matches the rate to the nature of the fact, and the system already classifies this via `Metric::is_instant()`:
+
+| Fact nature | Metrics | Rate |
+|---|---|---|
+| **Stock** (instant / balance sheet) | cash, debt, assets, liabilities, equity, PP&E | **Closing spot** rate at the period-end date |
+| **Flow** (duration / income & cash-flow) | revenue, net income, operating income, D&A, capex, operating cash flow | **Average** rate over `[period_start, period_end]` |
+
+```mermaid
+flowchart TD
+  F["non-USD monetary fact"] --> K{"Metric::is_instant()?"}
+  K -->|"yes (stock)"| S["closing rate @ period_end<br/>(nearest prior trading day)"]
+  K -->|"no (flow)"| A["average of daily rates<br/>over [period_start, period_end]"]
+  S --> C["value_usd = value × rate ÷ 1e6 (i128)"]
+  A --> C
+  C --> P["persist USD + provenance"]
+```
+
+The `fx_rate` table stays a **pure daily-rate cache** (no schema change): the closing lookup reads one row at/near period-end; the average is *derived* by reading all daily rows in the period and averaging. Only the tracked metrics × their periods need rates, so lookups per company are bounded.
+
+**Consistency rule.** A derived metric (e.g. free cash flow = net income + D&A − capex) must not mix company-provided USD convenience values with market-rate conversions — they carry different implied rates and the sum is incoherent. Keep a single basis per statement: prefer USD convenience values uniformly when they exist (WP3a); only market-convert when they don't, applying one methodology across all flow facts in the derivation.
 
 ### 6.4 Recommendation
 
-Ship **Option A + Option C now** (they are cheap, and together they make the pipeline *honest* — correct for convenience-translation filers, loud-and-safe for everyone else). Ship **Option B** as the follow-on work package that unlocks general FPI support. Sequencing and the FX-source choice are in the tech spec.
+Ship **Option A + Option C** (they are cheap, and together they make the pipeline *honest* — correct for convenience-translation filers, loud-and-safe for everyone else) **and Option B** (FX conversion), which unlocks general FPI support. Sequencing and the FX-source choice are in the tech spec.
 
-**Approved (2026-07-11).** The layered resolution ladder (prefer USD → FX-convert with recorded provenance → skip + diagnostic) is the target architecture. WP3a (Options A + C) lands with WP1; **WP3b (Option B, FX conversion) is scheduled as its own follow-on unit of work, not this cycle.**
+**Approved (2026-07-11, revised).** The layered resolution ladder (prefer USD → FX-convert with recorded provenance → skip + diagnostic) is the target architecture, with rate selection by fact nature (§6.5). WP3a (Options A + C) lands with WP1; **WP3b (Option B, FX conversion) is now in scope for this cycle** (moved in at the product owner's request) and follows WP3a.
 
 ---
 
@@ -225,10 +248,10 @@ flowchart LR
 |---|---|---|---|
 | 1 — IFRS coverage | **Fix now** | Inline `ifrs-full` candidates (Opt A) + coverage-matrix test | **Approved** |
 | 2 — Debt semantics | **Decide now, implement cheaply** | Economic-equivalence rule; borrowings-only, exclude leases (Opt A); `LeaseLiabilities` metric deferred (Opt C) | **Approved — leases are not debt** |
-| 3 — Currency | **Guard now, full fix scheduled** | USD-preference + reject/diagnostic now (Opts A+C); FX conversion via `FxRateSource` next (Opt B) | **Approved — WP3a this cycle, WP3b follow-on** |
+| 3 — Currency | **Full fix this cycle** | USD-preference + reject/diagnostic (Opts A+C) + FX conversion via `FxRateSource` (Opt B), rate selected by fact nature (§6.5) | **Approved — WP3a + WP3b both this cycle** |
 | Cross-cutting | **Fix now** | Four guards in §7 | **Approved** |
 
-The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference between "INFY works" and "IFRS filers work correctly and safely in general": Gap 1 is fixed immediately, Gap 2's policy is locked (leases are not debt) before any debt concept is mapped, and Gap 3's guards land now with its FX conversion scheduled as the next unit of work.
+The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference between "INFY works" and "IFRS filers work correctly and safely in general": Gap 1 is fixed immediately, Gap 2's policy is locked (leases are not debt) before any debt concept is mapped, and Gap 3 is fixed end-to-end this cycle — guards plus FX conversion (rate selected by fact nature, §6.5).
 
 ---
 
@@ -238,7 +261,8 @@ The blank screen closes with Gap 1 alone. Gaps 2 and 3 are the difference betwee
 |---|---|---|
 | 2026-07-11 | Recommended architecture adopted **in full** — no deviations. | Product owner |
 | 2026-07-11 | **Gap 2 (debt):** lease liabilities are **not** debt; map interest-bearing borrowings only, for parity with the US-GAAP treatment. `LeaseLiabilities` metric deferred. | Product owner |
-| 2026-07-11 | **Gap 3 (currency):** layered resolution ladder is the target architecture. WP3a (USD-preference + reject/diagnostic) ships with WP1; **WP3b (FX conversion) is a scheduled follow-on, not this cycle.** | Product owner |
+| 2026-07-11 | **Gap 3 (currency):** layered resolution ladder is the target architecture. WP3a (USD-preference + reject/diagnostic) ships with WP1. | Product owner |
+| 2026-07-11 (revised) | **Gap 3 (currency), scope change:** **WP3b (FX conversion) moved into this cycle.** Rate selection is by fact nature — closing spot rate for balance-sheet (stock) facts, period-average rate for income/cash-flow (flow) facts (§6.5), correcting the earlier "period-end for everything" simplification. | Product owner |
 | 2026-07-11 | **Guards (§7):** all four adopted and ship with WP1. | Product owner |
 
 **Implementation status:** not started. Deferred at the product owner's request while a separate agent is editing source files, to avoid write conflicts. This document and its companion tech spec are the authoritative record until implementation begins.
