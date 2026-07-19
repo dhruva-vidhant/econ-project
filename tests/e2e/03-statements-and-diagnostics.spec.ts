@@ -29,9 +29,12 @@ test.describe("Statements + diagnostics", () => {
 
   test("S3 — refresh button re-runs ingestion and updates timestamp", async ({ page }) => {
     await page.goto("/c/AAPL");
-    await expect(page.getByRole("button", { name: /refresh/i })).toBeVisible();
-    await page.getByRole("button", { name: /refresh/i }).click();
-    await expect(page.getByRole("button", { name: /refresh/i })).not.toBeDisabled();
+    // Target the ingestion "Refresh" button exactly — the dashboard also has a
+    // separate "↻ Refresh price" control, so a loose /refresh/i match is ambiguous.
+    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+    await expect(refresh).toBeVisible();
+    await refresh.click();
+    await expect(refresh).not.toBeDisabled();
     await page.screenshot({ path: "tests/e2e/screenshots/11-after-refresh.png", fullPage: true });
   });
 });
