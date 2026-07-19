@@ -433,4 +433,36 @@ mod tests {
         assert!(repo.get_by_key(&cik, "tpv").await.unwrap().is_some());
         assert!(repo.get_by_key(&cik, "headcount").await.unwrap().is_some());
     }
+
+    /// §12.6 `import_to_series_round_trip`: importing the PayPal fixture and then
+    /// reading the TPV series back must return the four years' values exactly,
+    /// in fiscal-period order, at full precision (value × 1e6 micro-units).
+    #[tokio::test]
+    async fn import_to_series_round_trip() {
+        use crate::derived::custom_series::custom_metric_series;
+
+        let pool = setup().await;
+        let cik = seed_company(&pool).await;
+        let periods = seed_annual_periods(&pool, &cik, &[2021, 2022, 2023, 2024]).await;
+        let repo = SqliteCustomMetricRepo::new(pool);
+        import_csv(&cik, &paypal_fixture(), &ImportOptions::default(), &repo, &periods)
+            .await
+            .unwrap();
+
+        let tpv = repo.get_by_key(&cik, "tpv").await.unwrap().unwrap();
+        let series = custom_metric_series(&repo, tpv.id, PeriodKind::Annual).await.unwrap();
+
+        // Four aligned annual points, ordered by fiscal period.
+        let got: Vec<(i32, i64)> =
+            series.iter().map(|p| (p.period.fiscal_year, p.value_micro)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (2021, 1_245_935_000_000_000_000),
+                (2022, 1_358_823_000_000_000_000),
+                (2023, 1_530_338_000_000_000_000),
+                (2024, 1_682_015_000_000_000_000),
+            ],
+        );
+    }
 }

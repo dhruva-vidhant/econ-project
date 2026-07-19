@@ -42,7 +42,7 @@ pub struct ExportReport {
 struct Row {
     period: Period,
     unit_label: &'static str,
-    currency: Option<&'static str>,
+    currency: Option<String>,
     value_str: String,
 }
 
@@ -53,7 +53,7 @@ fn parse_kind(kind: &str) -> Result<PeriodKind, AppError> {
 /// Unit label + formatted value for a built-in metric's micro value, per
 /// techspec §7.3: currency metrics carry a `currency` column ("USD"); ratio
 /// metrics render as "percent"; counts render as exact integers.
-fn format_builtin_value(metric: Metric, value: i64) -> (&'static str, Option<&'static str>, String) {
+fn format_builtin_value(metric: Metric, value: i64) -> (&'static str, Option<String>, String) {
     match metric {
         Metric::OperatingMargin | Metric::FreeCashFlowYield | Metric::CurrentFreeCashFlowYield => {
             ("percent", None, ratio_micro_to_percent_string(value))
@@ -61,13 +61,24 @@ fn format_builtin_value(metric: Metric, value: i64) -> (&'static str, Option<&'s
         Metric::SharesOutstandingBasic | Metric::SharesOutstandingDiluted => {
             ("count", None, micro_to_decimal_string(value, 0))
         }
-        _ => ("USD", Some("USD"), micro_to_decimal_string(value, 2)),
+        _ => ("USD", Some("USD".to_string()), micro_to_decimal_string(value, 2)),
     }
 }
 
-fn format_custom_value(unit_kind: UnitKind, decimals: u8, value: i64) -> (&'static str, Option<&'static str>, String) {
+/// Formats a custom-metric value. `currency` is the metric's declared ISO code,
+/// used verbatim for `Currency` metrics so exports carry the true currency
+/// (e.g. "EUR") rather than a hard-coded "USD".
+fn format_custom_value(
+    unit_kind: UnitKind,
+    currency: Option<&str>,
+    decimals: u8,
+    value: i64,
+) -> (&'static str, Option<String>, String) {
     match unit_kind {
-        UnitKind::Currency => ("USD", Some("USD"), micro_to_decimal_string(value, 2)),
+        UnitKind::Currency => {
+            let code = currency.unwrap_or("USD").to_string();
+            ("USD", Some(code), micro_to_decimal_string(value, 2))
+        }
         UnitKind::Count => ("count", None, micro_to_decimal_string(value, 0)),
         UnitKind::Ratio => ("percent", None, ratio_micro_to_percent_string(value)),
         UnitKind::Number => ("number", None, micro_to_decimal_string(value, decimals)),
@@ -118,8 +129,12 @@ async fn custom_rows(
     let rows = points
         .into_iter()
         .map(|p| {
-            let (unit_label, currency, value_str) =
-                format_custom_value(p.unit_kind, metric.decimals, p.value_micro);
+            let (unit_label, currency, value_str) = format_custom_value(
+                p.unit_kind,
+                metric.currency.as_deref(),
+                metric.decimals,
+                p.value_micro,
+            );
             Row { period: p.period, unit_label, currency, value_str }
         })
         .collect();
@@ -153,7 +168,7 @@ fn render_series_csv(metric_key: &str, rows: &[Row]) -> String {
         out.push_str(&r.value_str);
         if has_currency {
             out.push(',');
-            out.push_str(r.currency.unwrap_or(""));
+            out.push_str(r.currency.as_deref().unwrap_or(""));
         }
         out.push('\n');
     }
@@ -735,5 +750,99 @@ mod tests {
         let text = render_csv(&request, &ctx(&repos), &repos.custom).await.unwrap();
         let line = text.lines().nth(1).unwrap();
         assert!(line.ends_with(",25100000000"), "line was: {line}");
+    }
+
+    /// A custom currency metric declared in EUR must export its true ISO code,
+    /// not a hard-coded "USD". Regression for the export currency bug.
+    #[tokio::test]
+    async fn render_custom_series_honours_currency() {
+        let (pool, repos, cik) = setup_repos().await;
+        let period_id = seed_period(&pool, &cik, 2024).await;
+        let m = repos
+            .custom
+            .create(
+                &cik,
+                &NewCustomMetric {
+                    key: "eu_revenue".into(),
+                    label: "EU Revenue".into(),
+                    unit_kind: UnitKind::Currency,
+                    currency: Some("EUR".into()),
+                    decimals: Some(2),
+                    description: None,
+                },
+            )
+            .await
+            .unwrap();
+        repos.custom.upsert_point(m.id, Some(period_id), None, 12_340_000_000, None).await.unwrap();
+        let request = ExportRequest::CustomMetricSeries {
+            cik: cik.0.clone(),
+            metric_id: m.id,
+            kind: "annual".into(),
+        };
+        let text = render_csv(&request, &ctx(&repos), &repos.custom).await.unwrap();
+        assert!(text.contains(",currency"), "currency metric must carry a currency column");
+        let line = text.lines().nth(1).unwrap();
+        assert!(line.ends_with(",EUR"), "expected EUR currency code, line was: {line}");
+        assert!(line.contains("12340.00"), "line was: {line}");
+    }
+
+    /// §12.6 `export_writes_file`: `export_csv` must write a file whose bytes
+    /// equal `render_csv`, and report the correct row count.
+    #[tokio::test]
+    async fn export_writes_file() {
+        let (pool, repos, cik) = setup_repos().await;
+        let p2023 = seed_period(&pool, &cik, 2023).await;
+        let p2024 = seed_period(&pool, &cik, 2024).await;
+        insert_normalized(&pool, &cik, "acc-1", Metric::Revenue, p2023, 1_000_000_000_000).await;
+        insert_normalized(&pool, &cik, "acc-2", Metric::Revenue, p2024, 2_000_000_000_000).await;
+        let request = ExportRequest::MetricSeries {
+            cik: cik.0.clone(),
+            metric: "revenue".into(),
+            kind: "annual".into(),
+        };
+        let expected = render_csv(&request, &ctx(&repos), &repos.custom).await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("revenue.csv");
+        let dest_str = dest.to_str().unwrap();
+        let report = export_csv(request, dest_str, &ctx(&repos), &repos.custom).await.unwrap();
+
+        let on_disk = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(on_disk, expected, "file content must equal render_csv output");
+        assert_eq!(report.rows, 2, "two data rows (FY2023, FY2024)");
+        assert_eq!(report.bytes, expected.len() as u64);
+        assert_eq!(report.path, dest_str);
+    }
+
+    /// §12.6 `export_builtin_matches_series`: the exported built-in series must
+    /// have one row per period in the underlying series and carry the exact
+    /// micro value (rendered to 2dp) for each.
+    #[tokio::test]
+    async fn export_builtin_matches_series() {
+        let (pool, repos, cik) = setup_repos().await;
+        let p2023 = seed_period(&pool, &cik, 2023).await;
+        let p2024 = seed_period(&pool, &cik, 2024).await;
+        insert_normalized(&pool, &cik, "acc-1", Metric::Revenue, p2023, 1_500_000_000_000).await;
+        insert_normalized(&pool, &cik, "acc-2", Metric::Revenue, p2024, 2_500_000_000_000).await;
+
+        let series =
+            series::revenue_aware_series(&ctx(&repos), &cik, Metric::Revenue, PeriodKind::Annual)
+                .await
+                .unwrap();
+        let request = ExportRequest::MetricSeries {
+            cik: cik.0.clone(),
+            metric: "revenue".into(),
+            kind: "annual".into(),
+        };
+        let text = render_csv(&request, &ctx(&repos), &repos.custom).await.unwrap();
+        let data_rows: Vec<&str> = text.lines().skip(1).collect();
+        assert_eq!(data_rows.len(), series.len(), "one CSV row per series point");
+        for (row, point) in data_rows.iter().zip(series.iter()) {
+            let expected_value = micro_to_decimal_string(point.value, 2);
+            assert!(
+                row.contains(&expected_value),
+                "row {row} should contain exact value {expected_value}"
+            );
+        }
     }
 }
