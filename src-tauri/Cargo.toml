@@ -1,6 +1,6 @@
 [package]
 name = "econ-project"
-version = "1.0.0"
+version = "1.2.0"
 description = "Local-first financial analysis application"
 authors = ["EconProject Team"]
 edition = "2021"
@@ -55,3 +55,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # end-to-end testing. Off by default; activate via:
 #   cargo build --features e2e-webdriver
 e2e-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
+
+[[bin]]
+name = "import_transaction_margin"
+path = "src/bin/import_transaction_margin.rs"
