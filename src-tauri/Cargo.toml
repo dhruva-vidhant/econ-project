@@ -1,10 +1,13 @@
 [package]
 name = "econ-project"
-version = "1.2.0"
+version = "1.4.0"
 description = "Local-first financial analysis application"
 authors = ["EconProject Team"]
 edition = "2021"
 rust-version = "1.77"
+# The app binary (src/main.rs) is the bundle target; the extra one-shot
+# loader bins below must not make the default-run target ambiguous.
+default-run = "econ-project"
 
 [lib]
 name = "econ_project_lib"
