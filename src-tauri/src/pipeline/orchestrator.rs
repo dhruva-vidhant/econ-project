@@ -24,7 +24,9 @@ use crate::repos::normalized_fact::NormalizedFactRepo;
 use crate::repos::period::PeriodRepo;
 use crate::repos::raw_fact::RawFactRepo;
 use crate::sources::market_data::MarketDataAdapter;
-use crate::sources::{companyfacts, sec_client::SecClient, submissions, tickers::TickerMap};
+use crate::sources::{
+    companyfacts, legacy_annual, sec_client::SecClient, submissions, tickers::TickerMap,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct IngestionSummary {
@@ -101,7 +103,32 @@ pub async fn ingest_company(
 
     // ─── Download + Parse ───────────────────────────────────────────────
     let cf = companyfacts::fetch_companyfacts(&deps.sec, &cik).await?;
-    let raw_facts = companyfacts::to_raw_facts(&cik, &cf);
+    let mut raw_facts = companyfacts::to_raw_facts(&cik, &cf);
+    let legacy_annuals =
+        legacy_annual::fetch_public_annual_history(&deps.sec, &cik, &subs.filings.files).await?;
+    if !legacy_annuals.is_empty() {
+        let mut legacy_count = 0;
+        for (filing, legacy_facts) in legacy_annuals {
+            legacy_count += legacy_facts.len();
+            raw_facts.extend(legacy_facts);
+            deps.filings.upsert(&filing).await?;
+            filings_ingested += 1;
+            by_accn.insert(filing.accession_no.clone(), filing);
+        }
+        record_event(
+            deps,
+            &cik,
+            None,
+            "download",
+            Severity::Info,
+            false,
+            format!(
+                "Retrieved {legacy_count} audited facts from BBW's pre-XBRL public annual reports."
+            ),
+            &mut events,
+        )
+        .await?;
+    }
 
     let mut raw_to_insert: Vec<RawFact> = Vec::with_capacity(raw_facts.len());
     let mut placeholders_made = 0usize;

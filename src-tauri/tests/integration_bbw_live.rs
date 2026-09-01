@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use econ_project_lib::db::Pool;
-use econ_project_lib::domain::{Metric, PeriodKind, Ticker};
+use econ_project_lib::domain::{Metric, PeriodKind, SourceKind, Ticker};
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::SqliteCompanyRepo;
 use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
@@ -47,10 +47,27 @@ async fn bbw_recovers_pre_2019_annuals_and_labels_quarters_by_historical_calenda
         .current_series(&company.cik, Metric::Revenue, PeriodKind::Annual)
         .await
         .unwrap();
-
     assert!(annual
         .iter()
         .any(|(period, _)| period.end_date.year() < 2019));
+    assert!(annual.iter().any(|(period, _)| {
+        period.end_date == chrono::NaiveDate::from_ymd_opt(2005, 1, 1).unwrap()
+            && period.fiscal_year == 2004
+    }));
+    let (_, fy2004_revenue) = annual
+        .iter()
+        .find(|(period, _)| period.fiscal_year == 2004)
+        .expect("BBW FY2004 revenue missing from first public annual report");
+    assert_eq!(fy2004_revenue.value, 301_662_000_000_000);
+    assert_eq!(fy2004_revenue.source_kind, SourceKind::SecFilingHtml);
+    for fiscal_year in 2004..=2008 {
+        assert!(
+            annual
+                .iter()
+                .any(|(period, _)| period.fiscal_year == fiscal_year),
+            "BBW annual revenue missing for FY{fiscal_year}"
+        );
+    }
     assert!(annual.iter().any(|(period, _)| {
         period.end_date == chrono::NaiveDate::from_ymd_opt(2017, 12, 30).unwrap()
             && period.fiscal_year == 2017

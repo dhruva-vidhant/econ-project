@@ -7,8 +7,12 @@ use super::Micro;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
-    #[serde(rename = "xbrl_api")] XbrlApi,
-    #[serde(rename = "xbrl_xml")] XbrlXml,
+    #[serde(rename = "xbrl_api")]
+    XbrlApi,
+    #[serde(rename = "xbrl_xml")]
+    XbrlXml,
+    #[serde(rename = "sec_filing_html")]
+    SecFilingHtml,
 }
 
 impl SourceKind {
@@ -16,12 +20,14 @@ impl SourceKind {
         match self {
             SourceKind::XbrlApi => "xbrl_api",
             SourceKind::XbrlXml => "xbrl_xml",
+            SourceKind::SecFilingHtml => "sec_filing_html",
         }
     }
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "xbrl_api" => Some(SourceKind::XbrlApi),
             "xbrl_xml" => Some(SourceKind::XbrlXml),
+            "sec_filing_html" => Some(SourceKind::SecFilingHtml),
             _ => None,
         }
     }
@@ -81,7 +87,11 @@ mod tests {
 
     #[test]
     fn source_kind_round_trip() {
-        for k in [SourceKind::XbrlApi, SourceKind::XbrlXml] {
+        for k in [
+            SourceKind::XbrlApi,
+            SourceKind::XbrlXml,
+            SourceKind::SecFilingHtml,
+        ] {
             assert_eq!(SourceKind::from_str(k.as_str()), Some(k));
         }
     }

@@ -130,7 +130,7 @@ export interface RawFact {
   fy?: number | null;
   fp?: string | null;
   filed?: string | null;
-  source_kind: "xbrl_api" | "xbrl_xml";
+  source_kind: "xbrl_api" | "xbrl_xml" | "sec_filing_html";
   ingested_at: string;
 }
 
@@ -153,7 +153,7 @@ export interface NormalizedFact {
   value: number;
   unit: string;
   source_fact_id: number;
-  source_kind: "xbrl_api" | "xbrl_xml";
+  source_kind: "xbrl_api" | "xbrl_xml" | "sec_filing_html";
   is_primary: boolean;
   original_value?: number | null;
   original_unit?: string | null;

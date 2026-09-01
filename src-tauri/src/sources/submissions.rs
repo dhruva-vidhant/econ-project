@@ -51,7 +51,9 @@ impl SubmissionsRoot {
         let mut best: Option<(NaiveDate, String)> = None;
         for i in 0..n {
             let form = FormType::from_str(r.form.get(i).map(String::as_str).unwrap_or(""));
-            if !form.is_annual() { continue; }
+            if !form.is_annual() {
+                continue;
+            }
             let report = match r.report_date.get(i) {
                 Some(s) if !s.is_empty() => match NaiveDate::parse_from_str(s, "%Y-%m-%d") {
                     Ok(d) => d,
@@ -65,13 +67,25 @@ impl SubmissionsRoot {
                 _ => best = Some((report, mmdd)),
             }
         }
-        best.map(|(_, mmdd)| mmdd).unwrap_or_else(|| "1231".to_string())
+        best.map(|(_, mmdd)| mmdd)
+            .unwrap_or_else(|| "1231".to_string())
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SubmissionsFilings {
     pub recent: SubmissionsRecent,
+    #[serde(default)]
+    pub files: Vec<HistoricalSubmissionsFile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct HistoricalSubmissionsFile {
+    pub name: String,
+    #[serde(rename = "filingFrom")]
+    pub filing_from: String,
+    #[serde(rename = "filingTo")]
+    pub filing_to: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,15 +102,33 @@ pub struct SubmissionsRecent {
     pub items: Vec<String>,
     #[serde(rename = "isXBRL", default)]
     pub is_xbrl: Vec<i64>,
+    #[serde(rename = "primaryDocument", default)]
+    pub primary_document: Vec<String>,
 }
 
 pub fn url_for(cik: &Cik) -> String {
     format!("https://data.sec.gov/submissions/CIK{}.json", cik.0)
 }
 
-pub async fn fetch_submissions(client: &SecClient, cik: &Cik) -> Result<SubmissionsRoot, SourceError> {
+pub async fn fetch_submissions(
+    client: &SecClient,
+    cik: &Cik,
+) -> Result<SubmissionsRoot, SourceError> {
     let url = url_for(cik);
     client.get_json::<SubmissionsRoot>(&url).await
+}
+
+pub fn historical_url(file: &HistoricalSubmissionsFile) -> String {
+    format!("https://data.sec.gov/submissions/{}", file.name)
+}
+
+pub async fn fetch_historical(
+    client: &SecClient,
+    file: &HistoricalSubmissionsFile,
+) -> Result<SubmissionsRecent, SourceError> {
+    client
+        .get_json::<SubmissionsRecent>(&historical_url(file))
+        .await
 }
 
 /// Convert a `SubmissionsRoot` into `Filing` rows for persistence.
@@ -112,13 +144,16 @@ pub fn to_filings(cik: &Cik, root: &SubmissionsRoot) -> Vec<Filing> {
             .get(i)
             .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
             .unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
-        let period_of_report = r
-            .report_date
-            .get(i)
-            .and_then(|s| if s.is_empty() { None } else { NaiveDate::parse_from_str(s, "%Y-%m-%d").ok() });
+        let period_of_report = r.report_date.get(i).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+            }
+        });
         let items = r.items.get(i).cloned().unwrap_or_default();
-        let is_4_02 = matches!(form, FormType::EightK)
-            && items.split(',').any(|s| s.trim() == "4.02");
+        let is_4_02 =
+            matches!(form, FormType::EightK) && items.split(',').any(|s| s.trim() == "4.02");
         out.push(Filing {
             accession_no: AccessionNo(r.accession_number[i].clone()),
             cik: cik.clone(),
@@ -153,13 +188,18 @@ mod tests {
             fiscal_year_end: "0926".into(),
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
-                    accession_number: vec!["0000320193-24-000001".into(), "0000320193-24-000002".into()],
+                    accession_number: vec![
+                        "0000320193-24-000001".into(),
+                        "0000320193-24-000002".into(),
+                    ],
                     filing_date: vec!["2024-01-15".into(), "2024-02-01".into()],
                     report_date: vec!["2023-12-31".into(), "".into()],
                     form: vec!["8-K".into(), "8-K".into()],
                     items: vec!["4.02,9.01".into(), "1.01,9.01".into()],
                     is_xbrl: vec![1, 0],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         let cik = Cik("0000320193".into());
@@ -203,12 +243,18 @@ mod tests {
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
                     accession_number: vec!["a".into(), "b".into(), "c".into()],
-                    filing_date: vec!["2026-05-28".into(), "2025-07-29".into(), "2024-07-30".into()],
+                    filing_date: vec![
+                        "2026-05-28".into(),
+                        "2025-07-29".into(),
+                        "2024-07-30".into(),
+                    ],
                     report_date: vec!["".into(), "2025-03-31".into(), "2024-03-31".into()],
                     form: vec!["6-K".into(), "20-F".into(), "20-F".into()],
                     items: vec!["".into(); 3],
                     is_xbrl: vec![0, 1, 1],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         assert_eq!(root.resolved_fiscal_year_end(), "0331");
@@ -217,8 +263,10 @@ mod tests {
     #[test]
     fn fye_falls_back_to_calendar_year_when_no_annual_report() {
         let root = SubmissionsRoot {
-            cik: "x".into(), entity_name: "x".into(),
-            tickers: vec![], exchanges: vec![],
+            cik: "x".into(),
+            entity_name: "x".into(),
+            tickers: vec![],
+            exchanges: vec![],
             fiscal_year_end: "".into(),
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
@@ -228,7 +276,9 @@ mod tests {
                     form: vec!["6-K".into()],
                     items: vec!["".into()],
                     is_xbrl: vec![0],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         assert_eq!(root.resolved_fiscal_year_end(), "1231");
@@ -237,15 +287,22 @@ mod tests {
     #[test]
     fn fye_passes_through_when_present() {
         let root = SubmissionsRoot {
-            cik: "x".into(), entity_name: "x".into(),
-            tickers: vec![], exchanges: vec![],
+            cik: "x".into(),
+            entity_name: "x".into(),
+            tickers: vec![],
+            exchanges: vec![],
             fiscal_year_end: "0926".into(),
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
-                    accession_number: vec![], filing_date: vec![],
-                    report_date: vec![], form: vec![], items: vec![],
+                    accession_number: vec![],
+                    filing_date: vec![],
+                    report_date: vec![],
+                    form: vec![],
+                    items: vec![],
                     is_xbrl: vec![],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         assert_eq!(root.resolved_fiscal_year_end(), "0926");
@@ -254,7 +311,10 @@ mod tests {
     #[test]
     fn maps_form_types_correctly() {
         let root = SubmissionsRoot {
-            cik: "x".into(), entity_name: "x".into(), tickers: vec![], exchanges: vec![],
+            cik: "x".into(),
+            entity_name: "x".into(),
+            tickers: vec![],
+            exchanges: vec![],
             fiscal_year_end: "x".into(),
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
@@ -264,7 +324,9 @@ mod tests {
                     form: vec!["10-K".into(), "10-Q/A".into(), "8-K".into()],
                     items: vec!["".into(); 3],
                     is_xbrl: vec![1, 1, 0],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         let f = to_filings(&Cik("0000000001".into()), &root);
@@ -277,8 +339,10 @@ mod tests {
     #[test]
     fn maps_foreign_issuer_form_types() {
         let root = SubmissionsRoot {
-            cik: "x".into(), entity_name: "x".into(),
-            tickers: vec![], exchanges: vec![],
+            cik: "x".into(),
+            entity_name: "x".into(),
+            tickers: vec![],
+            exchanges: vec![],
             fiscal_year_end: "0331".into(),
             filings: SubmissionsFilings {
                 recent: SubmissionsRecent {
@@ -288,7 +352,9 @@ mod tests {
                     form: vec!["20-F".into(), "20-F/A".into()],
                     items: vec!["".into(); 2],
                     is_xbrl: vec![1, 1],
+                    primary_document: vec![],
                 },
+                files: vec![],
             },
         };
         let f = to_filings(&Cik("0001577552".into()), &root);
