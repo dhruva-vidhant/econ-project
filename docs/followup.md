@@ -34,7 +34,7 @@ What's deferred from the V1 implementation slice to a follow-up pass. Ordered by
 
 13. **Diagnostics tab (M41).** Route renders an empty state. Wire `useEvents` to render a filterable table.
 
-14. **FYE-change banner (§11.2).** Logic to detect a company's `fiscal_year_end` changing across history; UI banner.
+14. **FYE-change banner (§11.2).** Historical FYE detection and normalization are implemented; surface the existing fiscal-calendar-history ingestion event as a dashboard banner.
 
 15. **52/53-week detection.** Schema column `is_53_week` exists; periods reconciliation should set it via `Period::detect_53_week` (already implemented as a helper).
 

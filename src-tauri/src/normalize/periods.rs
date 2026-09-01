@@ -46,7 +46,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use chrono::NaiveDate;
 
-use crate::domain::{Cik, Metric, Period, RawFact};
+use crate::domain::{Cik, Metric, RawFact};
+use crate::normalize::fiscal_calendar::FiscalCalendar;
 
 /// A single-quarter fact (either reported directly or derived).
 #[derive(Clone, Debug)]
@@ -54,7 +55,8 @@ pub struct QuarterValue {
     pub metric: Metric,
     pub cik: Cik,
     pub fy: i32,
-    pub fq: u8,                                  // 1..=4
+    pub fq: u8, // 1..=4
+    pub fiscal_year_end: String,
     pub period_start: NaiveDate,
     pub period_end: NaiveDate,
     /// Source raw fact id when reported directly; the contributing facts'
@@ -123,13 +125,13 @@ fn classify_slot(f: &RawFact) -> Option<Slot> {
 /// so the caller can persist them on the same pass.
 pub fn reconcile_quarters(
     raw: &[RawFact],
-    fye_mmdd: &str,
+    calendar: &FiscalCalendar,
 ) -> (Vec<QuarterValue>, Vec<RawFact>) {
     // Index by (metric, concept, derived_fy, slot) — keep the
     // most-recently-filed per slot. Tracking concept lets us avoid
     // mixing inputs from different XBRL concepts within one
     // (metric, fy) series.
-    let mut by_key: HashMap<(Metric, String, i32, Slot), RawFact> = HashMap::new();
+    let mut by_key: HashMap<(Metric, String, usize, i32, Slot), RawFact> = HashMap::new();
     for f in raw {
         let metric = match crate::normalize::concept_map::metric_for(&f.taxonomy, &f.concept) {
             Some(m) => m,
@@ -143,9 +145,9 @@ pub fn reconcile_quarters(
             Some(s) => s,
             None => continue,
         };
-        let derived_fy = Period::compute_fiscal_year(f.period_end, fye_mmdd);
+        let fiscal = calendar.period_for(f.period_end);
         let ck = concept_key(&f.taxonomy, &f.concept);
-        let key = (metric, ck, derived_fy, slot);
+        let key = (metric, ck, fiscal.segment_id, fiscal.fiscal_year, slot);
         let take = match by_key.get(&key) {
             Some(prev) => f.filed > prev.filed,
             None => true,
@@ -156,10 +158,10 @@ pub fn reconcile_quarters(
     }
 
     // Collect concepts present per (metric, derived_fy).
-    let mut concepts_by_year: HashMap<(Metric, i32), BTreeSet<String>> = HashMap::new();
-    for (metric, concept, fy, _slot) in by_key.keys() {
+    let mut concepts_by_year: HashMap<(Metric, usize, i32), BTreeSet<String>> = HashMap::new();
+    for (metric, concept, segment_id, fy, _slot) in by_key.keys() {
         concepts_by_year
-            .entry((*metric, *fy))
+            .entry((*metric, *segment_id, *fy))
             .or_default()
             .insert(concept.clone());
     }
@@ -167,19 +169,28 @@ pub fn reconcile_quarters(
     let mut out: Vec<QuarterValue> = Vec::new();
     let mut fy_out: Vec<RawFact> = Vec::new();
 
-    for ((metric, fy), concepts) in concepts_by_year {
+    for ((metric, segment_id, fy), concepts) in concepts_by_year {
         let catalog: Vec<String> = crate::normalize::concept_map::concepts_for(metric)
             .iter()
             .map(|(t, c)| concept_key(t, c))
             .collect();
-        let chosen = match pick_concept(&by_key, metric, fy, &concepts, &catalog) {
+        let chosen = match pick_concept(&by_key, metric, segment_id, fy, &concepts, &catalog) {
             Some(c) => c,
             None => continue,
         };
 
         let g = |s: Slot| -> Option<&RawFact> {
-            by_key.get(&(metric, chosen.clone(), fy, s))
+            by_key.get(&(metric, chosen.clone(), segment_id, fy, s))
         };
+        let fiscal_year_end = calendar
+            .period_for(
+                ALL_SLOTS
+                    .iter()
+                    .find_map(|slot| g(*slot))
+                    .expect("a reconciliation group contains a fact")
+                    .period_end,
+            )
+            .fiscal_year_end;
         let q1 = g(Slot::SingleQ1);
         let q2_single = g(Slot::SingleQ2);
         let h1 = g(Slot::YtdH1);
@@ -193,21 +204,21 @@ pub fn reconcile_quarters(
         }
 
         if let Some(f) = q1 {
-            push_single(&mut out, metric, f, 1);
+            push_single(&mut out, metric, f, fy, &fiscal_year_end, 1);
         }
 
         // Q2: prefer single-quarter; else derive H1 - Q1.
         if let Some(f) = q2_single {
-            push_single(&mut out, metric, f, 2);
+            push_single(&mut out, metric, f, fy, &fiscal_year_end, 2);
         } else if let (Some(h1f), Some(q1f)) = (h1, q1) {
             let value = h1f.value_numeric.saturating_sub(q1f.value_numeric);
-            push_derived(&mut out, metric, h1f, q1f, 2, value);
+            push_derived(&mut out, metric, h1f, q1f, fy, &fiscal_year_end, 2, value);
         }
 
         // Q3: prefer single-quarter; else derive 9M - H1 (using YTD-H1
         // when present, falling back to Q1+SingleQ2 sum).
         if let Some(f) = q3_single {
-            push_single(&mut out, metric, f, 3);
+            push_single(&mut out, metric, f, fy, &fiscal_year_end, 3);
         } else if let Some(nm) = nine_m {
             // Q3 = 9M − H1, spanning (H1_end, 9M_end]. Capture the H1 close
             // date alongside the value so the derived quarter starts the day
@@ -222,13 +233,22 @@ pub fn reconcile_quarters(
             };
             if let Some((h1v, h1_end)) = h1_value {
                 let value = nm.value_numeric.saturating_sub(h1v);
-                push_derived_single_input(&mut out, metric, nm, 3, value, next_day(h1_end));
+                push_derived_single_input(
+                    &mut out,
+                    metric,
+                    nm,
+                    fy,
+                    &fiscal_year_end,
+                    3,
+                    value,
+                    next_day(h1_end),
+                );
             }
         }
 
         // Q4: prefer single-quarter; else derive FY - 9M.
         if let Some(f) = q4_single {
-            push_single(&mut out, metric, f, 4);
+            push_single(&mut out, metric, f, fy, &fiscal_year_end, 4);
         } else if let Some(fy_f) = fy_fact {
             // Q4 = FY − 9M, spanning (9M_end, FY_end]. Capture the 9M close
             // date so the derived quarter starts the day after the first
@@ -249,7 +269,16 @@ pub fn reconcile_quarters(
             };
             if let Some((nm, nine_m_end)) = nine_m_value {
                 let value = fy_f.value_numeric.saturating_sub(nm);
-                push_derived_single_input(&mut out, metric, fy_f, 4, value, next_day(nine_m_end));
+                push_derived_single_input(
+                    &mut out,
+                    metric,
+                    fy_f,
+                    fy,
+                    &fiscal_year_end,
+                    4,
+                    value,
+                    next_day(nine_m_end),
+                );
             }
         }
     }
@@ -260,19 +289,18 @@ pub fn reconcile_quarters(
 /// Picks the source concept for a (metric, fy): highest slot coverage,
 /// breaking ties by catalog priority order.
 fn pick_concept(
-    by_key: &HashMap<(Metric, String, i32, Slot), RawFact>,
+    by_key: &HashMap<(Metric, String, usize, i32, Slot), RawFact>,
     metric: Metric,
+    segment_id: usize,
     fy: i32,
     concepts: &BTreeSet<String>,
     catalog: &[String],
 ) -> Option<String> {
-    let priority = |c: &str| -> usize {
-        catalog.iter().position(|x| x == c).unwrap_or(usize::MAX)
-    };
+    let priority = |c: &str| -> usize { catalog.iter().position(|x| x == c).unwrap_or(usize::MAX) };
     let coverage = |c: &str| -> usize {
         ALL_SLOTS
             .iter()
-            .filter(|s| by_key.contains_key(&(metric, c.to_string(), fy, **s)))
+            .filter(|s| by_key.contains_key(&(metric, c.to_string(), segment_id, fy, **s)))
             .count()
     };
     concepts
@@ -288,13 +316,21 @@ fn pick_concept(
         .cloned()
 }
 
-fn push_single(out: &mut Vec<QuarterValue>, metric: Metric, f: &RawFact, fq: u8) {
+fn push_single(
+    out: &mut Vec<QuarterValue>,
+    metric: Metric,
+    f: &RawFact,
+    fy: i32,
+    fye: &str,
+    fq: u8,
+) {
     let start = f.period_start.unwrap_or(f.period_end);
     out.push(QuarterValue {
         metric,
         cik: f.cik.clone(),
-        fy: f.fy.unwrap_or(0),
+        fy,
         fq,
+        fiscal_year_end: fye.to_owned(),
         period_start: start,
         period_end: f.period_end,
         source_fact_id: f.id,
@@ -309,6 +345,8 @@ fn push_derived(
     metric: Metric,
     minuend: &RawFact,
     subtrahend: &RawFact,
+    fy: i32,
+    fye: &str,
     fq: u8,
     value: i64,
 ) {
@@ -320,8 +358,9 @@ fn push_derived(
     out.push(QuarterValue {
         metric,
         cik: minuend.cik.clone(),
-        fy: minuend.fy.unwrap_or(0),
+        fy,
         fq,
+        fiscal_year_end: fye.to_owned(),
         period_start: start,
         period_end: minuend.period_end,
         source_fact_id: minuend.id,
@@ -335,6 +374,8 @@ fn push_derived_single_input(
     out: &mut Vec<QuarterValue>,
     metric: Metric,
     minuend: &RawFact,
+    fy: i32,
+    fye: &str,
     fq: u8,
     value: i64,
     // Start of the derived single quarter. The minuend is a cumulative
@@ -345,8 +386,9 @@ fn push_derived_single_input(
     out.push(QuarterValue {
         metric,
         cik: minuend.cik.clone(),
-        fy: minuend.fy.unwrap_or(0),
+        fy,
         fq,
+        fiscal_year_end: fye.to_owned(),
         period_start: start,
         period_end: minuend.period_end,
         source_fact_id: minuend.id,
@@ -367,6 +409,10 @@ mod tests {
     use super::*;
     use crate::domain::{AccessionNo, SourceKind};
     use chrono::Utc;
+
+    fn calendar() -> FiscalCalendar {
+        FiscalCalendar::single("1231".into())
+    }
 
     fn rf_dates(
         metric_concept: (&str, &str),
@@ -410,7 +456,7 @@ mod tests {
             d(2024, 3, 31),
             100,
         )];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].fq, 1);
         assert_eq!(q[0].value, 100);
@@ -420,10 +466,22 @@ mod tests {
     #[test]
     fn derives_q2_from_ytd_h1_minus_q1() {
         let raw = vec![
-            rf_dates(("us-gaap", "Revenues"), "Q1", d(2024, 1, 1), d(2024, 3, 31), 100),
-            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 1, 1), d(2024, 6, 30), 250),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2024, 1, 1),
+                d(2024, 3, 31),
+                100,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q2",
+                d(2024, 1, 1),
+                d(2024, 6, 30),
+                250,
+            ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         let q2 = q.iter().find(|x| x.fq == 2).unwrap();
         assert_eq!(q2.value, 150);
         assert!(q2.derived);
@@ -432,10 +490,22 @@ mod tests {
     #[test]
     fn passes_through_single_quarter_q2() {
         let raw = vec![
-            rf_dates(("us-gaap", "Revenues"), "Q1", d(2024, 1, 1), d(2024, 3, 31), 100),
-            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 4, 1), d(2024, 6, 30), 150),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2024, 1, 1),
+                d(2024, 3, 31),
+                100,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q2",
+                d(2024, 4, 1),
+                d(2024, 6, 30),
+                150,
+            ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         let q2 = q.iter().find(|x| x.fq == 2).unwrap();
         assert_eq!(q2.value, 150);
         assert!(!q2.derived);
@@ -444,10 +514,22 @@ mod tests {
     #[test]
     fn derives_q4_from_fy_minus_9m_when_q3_is_ytd() {
         let raw = vec![
-            rf_dates(("us-gaap", "Revenues"), "Q3", d(2024, 1, 1), d(2024, 9, 30), 300),
-            rf_dates(("us-gaap", "Revenues"), "FY", d(2024, 1, 1), d(2024, 12, 31), 400),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q3",
+                d(2024, 1, 1),
+                d(2024, 9, 30),
+                300,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2024, 1, 1),
+                d(2024, 12, 31),
+                400,
+            ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         let q4 = q.iter().find(|x| x.fq == 4).unwrap();
         assert_eq!(q4.value, 100);
         assert!(q4.derived);
@@ -461,12 +543,36 @@ mod tests {
         // every derived quarter's start collapses to the fiscal-year start
         // (which previously sorted Q4 before Q2/Q3 when ordering by start).
         let raw = vec![
-            rf_dates(("us-gaap", "Revenues"), "Q1", d(2024, 1, 1), d(2024, 3, 31), 100),
-            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 1, 1), d(2024, 6, 30), 250),
-            rf_dates(("us-gaap", "Revenues"), "Q3", d(2024, 1, 1), d(2024, 9, 30), 450),
-            rf_dates(("us-gaap", "Revenues"), "FY", d(2024, 1, 1), d(2024, 12, 31), 700),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2024, 1, 1),
+                d(2024, 3, 31),
+                100,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q2",
+                d(2024, 1, 1),
+                d(2024, 6, 30),
+                250,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q3",
+                d(2024, 1, 1),
+                d(2024, 9, 30),
+                450,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2024, 1, 1),
+                d(2024, 12, 31),
+                700,
+            ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
 
         let q2 = q.iter().find(|x| x.fq == 2).unwrap();
         assert!(q2.derived);
@@ -540,7 +646,7 @@ mod tests {
                 6_000,
             ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         let q4 = q.iter().find(|x| x.fq == 4).unwrap();
         assert_eq!(q4.value, 1_500);
         assert!(q4.derived);
@@ -584,7 +690,7 @@ mod tests {
                 700,
             ),
         ];
-        let (q, _fy) = reconcile_quarters(&raw, "12-31");
+        let (q, _fy) = reconcile_quarters(&raw, &calendar());
         let q4_2010 = q
             .iter()
             .find(|x| x.fq == 4 && x.period_end == d(2010, 12, 31))
@@ -600,15 +706,122 @@ mod tests {
         // by period span (single ~90 days, YTD ~180 days) and prefer
         // the single-quarter row when both are filed.
         let raw = vec![
-            rf_dates(("us-gaap", "Revenues"), "Q1", d(2024, 1, 1), d(2024, 3, 31), 100),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2024, 1, 1),
+                d(2024, 3, 31),
+                100,
+            ),
             // Single-quarter Q2.
-            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 4, 1), d(2024, 6, 30), 175),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q2",
+                d(2024, 4, 1),
+                d(2024, 6, 30),
+                175,
+            ),
             // YTD H1 — same fp tag, longer span.
-            rf_dates(("us-gaap", "Revenues"), "Q2", d(2024, 1, 1), d(2024, 6, 30), 275),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q2",
+                d(2024, 1, 1),
+                d(2024, 6, 30),
+                275,
+            ),
         ];
-        let (q, _) = reconcile_quarters(&raw, "12-31");
+        let (q, _) = reconcile_quarters(&raw, &calendar());
         let q2 = q.iter().find(|x| x.fq == 2).unwrap();
         assert_eq!(q2.value, 175);
         assert!(!q2.derived, "single-quarter should win over derived");
+    }
+
+    #[test]
+    fn quarterly_reconciliation_uses_the_historical_calendar() {
+        let evidence = vec![
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2016, 1, 3),
+                d(2016, 12, 31),
+                400,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2017, 1, 1),
+                d(2017, 12, 30),
+                500,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2018, 2, 4),
+                d(2019, 2, 2),
+                600,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "FY",
+                d(2019, 2, 3),
+                d(2020, 2, 1),
+                700,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2017, 1, 1),
+                d(2017, 4, 1),
+                100,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q3",
+                d(2017, 1, 1),
+                d(2017, 9, 30),
+                350,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q1",
+                d(2018, 2, 4),
+                d(2018, 5, 5),
+                120,
+            ),
+            rf_dates(
+                ("us-gaap", "Revenues"),
+                "Q3",
+                d(2018, 2, 4),
+                d(2018, 11, 3),
+                480,
+            ),
+        ];
+        let calendar = FiscalCalendar::infer(&evidence, "0130");
+
+        let (quarters, _) = reconcile_quarters(&evidence, &calendar);
+
+        let old_q1 = quarters
+            .iter()
+            .find(|q| q.period_end == d(2017, 4, 1))
+            .unwrap();
+        assert_eq!((old_q1.fy, old_q1.fq), (2017, 1));
+        assert_eq!(old_q1.fiscal_year_end, "1230");
+        let new_q1 = quarters
+            .iter()
+            .find(|q| q.period_end == d(2018, 5, 5))
+            .unwrap();
+        assert_eq!((new_q1.fy, new_q1.fq), (2019, 1));
+        assert_eq!(new_q1.fiscal_year_end, "0130");
+
+        let old_q4 = quarters
+            .iter()
+            .find(|q| q.period_end == d(2017, 12, 30) && q.fq == 4)
+            .unwrap();
+        assert_eq!(old_q4.value, 150);
+        let new_q4 = quarters
+            .iter()
+            .find(|q| q.period_end == d(2019, 2, 2) && q.fq == 4)
+            .unwrap();
+        assert_eq!(new_q4.value, 120);
     }
 }

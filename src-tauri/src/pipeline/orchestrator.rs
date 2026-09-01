@@ -12,7 +12,7 @@ use crate::domain::{
 };
 use crate::errors::{PipelineError, RepoError, SourceError};
 use crate::import::resolve::{resolve_period, Resolution};
-use crate::normalize::{concept_map, periods::reconcile_quarters};
+use crate::normalize::{concept_map, fiscal_calendar::FiscalCalendar, periods::reconcile_quarters};
 use crate::repos::company::CompanyRepo;
 use crate::repos::current_price::CurrentPriceRepo;
 use crate::repos::custom_metric::CustomMetricRepo;
@@ -111,7 +111,9 @@ pub async fn ingest_company(
                 accession_no: f.accession_no.clone(),
                 cik: cik.clone(),
                 form_type: FormType::Other("unknown".into()),
-                filed_at: f.filed.unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
+                filed_at: f
+                    .filed
+                    .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
                 period_of_report: Some(f.period_end),
                 is_amendment: false,
                 amends: None,
@@ -149,11 +151,56 @@ pub async fn ingest_company(
     // Source of truth: the period's own `end_date`, projected through
     // the issuer's fiscal-year-end calendar. See
     // Period::compute_fiscal_year.
-    let fye = resolved_fye.as_str();
-    let derive_fy = |end: NaiveDate| Period::compute_fiscal_year(end, fye);
+    let calendar = FiscalCalendar::infer(&all_raw, &resolved_fye);
+    if calendar.segments().len() > 1 {
+        let regimes = calendar
+            .segments()
+            .iter()
+            .map(|segment| match segment.effective_from {
+                Some(date) => format!("{} from {date}", segment.fiscal_year_end),
+                None => format!("{} historically", segment.fiscal_year_end),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        record_event(
+            deps,
+            &cik,
+            None,
+            "normalize",
+            Severity::Info,
+            false,
+            format!("Detected fiscal-calendar history: {regimes}."),
+            &mut events,
+        )
+        .await?;
+    }
+
+    let existing_periods = deps.periods.list_for_cik(&cik, None).await?;
+    let classification_changed = existing_periods.iter().any(|period| {
+        let fiscal = calendar.period_for(period.end_date);
+        fiscal.fiscal_year != period.fiscal_year
+            || fiscal.fiscal_year_end != period.fiscal_year_end
+            || (period.fiscal_quarter < 4 && fiscal.fiscal_quarter != Some(period.fiscal_quarter))
+    });
+    if classification_changed {
+        deps.periods
+            .reset_normalized_for_reclassification(&cik)
+            .await?;
+        record_event(
+            deps,
+            &cik,
+            None,
+            "normalize",
+            Severity::Info,
+            false,
+            "Rebuilt normalized periods after fiscal-calendar classification changed.".into(),
+            &mut events,
+        )
+        .await?;
+    }
 
     // (1) Quarterly facts via period reconciler.
-    let (quarter_values, _fy_facts_from_quarters) = reconcile_quarters(&all_raw, fye);
+    let (quarter_values, _fy_facts_from_quarters) = reconcile_quarters(&all_raw, &calendar);
     let mut normalized_count = 0usize;
 
     for q in quarter_values {
@@ -168,13 +215,12 @@ pub async fn ingest_company(
                 &mut events).await?;
             continue;
         }
-        let derived_fy = derive_fy(q.period_end);
         let period = Period {
             id: 0,
             cik: cik.clone(),
-            fiscal_year: derived_fy,
+            fiscal_year: q.fy,
             fiscal_quarter: q.fq,
-            fiscal_year_end: resolved_fye.clone(),
+            fiscal_year_end: q.fiscal_year_end.clone(),
             start_date: q.period_start,
             end_date: q.period_end,
             kind: PeriodKind::Quarterly,
@@ -183,21 +229,46 @@ pub async fn ingest_company(
         let period_id = deps.periods.upsert_returning_id(&period).await?;
         let value = apply_sign(q.metric, q.value);
         let nf = NormalizedFact {
-            id: 0, cik: cik.clone(), metric: q.metric, period_id,
-            value, unit: "USD".into(),
-            source_fact_id: q.source_fact_id, source_kind: q.source_kind,
+            id: 0,
+            cik: cik.clone(),
+            metric: q.metric,
+            period_id,
+            value,
+            unit: "USD".into(),
+            source_fact_id: q.source_fact_id,
+            source_kind: q.source_kind,
             is_primary: true,
-            original_value: None, original_unit: None,
-            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
+            original_value: None,
+            original_unit: None,
+            fx_rate_micro: None,
+            fx_rate_source: None,
+            fx_rate_date: None,
             superseded_by: None,
         };
-        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+        if deps
+            .normalized_facts
+            .insert_primary_with_supersession(&nf)
+            .await
+            .is_ok()
+        {
             normalized_count += 1;
             if q.derived {
-                record_event(deps, &cik, None, "normalize", Severity::Info, false,
-                    format!("Derived single-quarter {} for FY{} Q{} from YTD difference.",
-                        q.metric.as_str(), derived_fy, q.fq),
-                    &mut events).await?;
+                record_event(
+                    deps,
+                    &cik,
+                    None,
+                    "normalize",
+                    Severity::Info,
+                    false,
+                    format!(
+                        "Derived single-quarter {} for FY{} Q{} from YTD difference.",
+                        q.metric.as_str(),
+                        q.fy,
+                        q.fq
+                    ),
+                    &mut events,
+                )
+                .await?;
             }
         }
     }
@@ -208,9 +279,9 @@ pub async fn ingest_company(
     // appear under different SEC `fy` tags (the comparative-data case
     // described above). For amendments, insert_primary_with_supersession
     // updates the previous primary so the chain is preserved.
-    type AnnualKey = (Metric, i32);
+    type AnnualKey = (Metric, usize, i32);
     let mut best_annual: HashMap<AnnualKey, &RawFact> = HashMap::new();
-    type InstantKey = (Metric, i32, u8);
+    type InstantKey = (Metric, usize, i32, u8);
     let mut best_instant: HashMap<InstantKey, &RawFact> = HashMap::new();
 
     for f in &all_raw {
@@ -218,7 +289,7 @@ pub async fn ingest_company(
             Some(m) => m,
             None => continue,
         };
-        let derived_fy = derive_fy(f.period_end);
+        let fiscal = calendar.period_for(f.period_end);
         if metric.is_instant() {
             // For instants we ignore both `fy` and `fp` — the SEC tags
             // both follow the filing's fiscal year, so a 2019-Q1 filing
@@ -226,15 +297,17 @@ pub async fn ingest_company(
             // which would land in our Q1-2018 bucket if we trusted it.
             // Period::compute_fiscal_quarter aligns on period_end month
             // against the issuer's fiscal calendar.
-            let Some(fq) = Period::compute_fiscal_quarter(f.period_end, fye) else {
+            let Some(fq) = fiscal.fiscal_quarter else {
                 continue;
             };
-            let key = (metric, derived_fy, fq);
+            let key = (metric, fiscal.segment_id, fiscal.fiscal_year, fq);
             let take = match best_instant.get(&key) {
                 Some(prev) => f.filed > prev.filed,
                 None => true,
             };
-            if take { best_instant.insert(key, f); }
+            if take {
+                best_instant.insert(key, f);
+            }
             continue;
         }
         // Duration facts: only the FY (annual) row goes through this
@@ -242,60 +315,90 @@ pub async fn ingest_company(
         // Use period span (~365 days, ending on the issuer's FYE) rather
         // than the SEC `fp` tag, which carries the filing's year and
         // would let an embedded comparative 10-K row sneak through.
-        let Some(start) = f.period_start else { continue };
+        let Some(start) = f.period_start else {
+            continue;
+        };
         let span_days = (f.period_end - start).num_days();
         let is_full_year = span_days >= 340 && span_days <= 380;
-        let ends_on_fye =
-            Period::compute_fiscal_quarter(f.period_end, fye) == Some(0);
-        if !(is_full_year && ends_on_fye) { continue; }
-        let key = (metric, derived_fy);
+        let ends_on_fye = fiscal.fiscal_quarter == Some(0);
+        if !(is_full_year && ends_on_fye) {
+            continue;
+        }
+        let key = (metric, fiscal.segment_id, fiscal.fiscal_year);
         let take = match best_annual.get(&key) {
             Some(prev) => f.filed > prev.filed,
             None => true,
         };
-        if take { best_annual.insert(key, f); }
+        if take {
+            best_annual.insert(key, f);
+        }
     }
 
     // Persist annual rows.
-    for ((metric, derived_fy), f) in best_annual {
+    for ((metric, _segment_id, derived_fy), f) in best_annual {
         let start = f.period_start.unwrap_or(f.period_end);
+        let fiscal = calendar.period_for(f.period_end);
         let period = Period {
-            id: 0, cik: cik.clone(),
-            fiscal_year: derived_fy, fiscal_quarter: 0,
-            fiscal_year_end: resolved_fye.clone(),
-            start_date: start, end_date: f.period_end,
+            id: 0,
+            cik: cik.clone(),
+            fiscal_year: derived_fy,
+            fiscal_quarter: 0,
+            fiscal_year_end: fiscal.fiscal_year_end,
+            start_date: start,
+            end_date: f.period_end,
             kind: PeriodKind::Annual,
             is_53_week: Period::detect_53_week(start, f.period_end),
         };
         let period_id = deps.periods.upsert_returning_id(&period).await?;
         let value = apply_sign(metric, f.value_numeric);
         let nf = NormalizedFact {
-            id: 0, cik: cik.clone(), metric, period_id,
-            value, unit: f.unit.clone(),
-            source_fact_id: f.id, source_kind: f.source_kind,
+            id: 0,
+            cik: cik.clone(),
+            metric,
+            period_id,
+            value,
+            unit: f.unit.clone(),
+            source_fact_id: f.id,
+            source_kind: f.source_kind,
             is_primary: true,
-            original_value: None, original_unit: None,
-            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
+            original_value: None,
+            original_unit: None,
+            fx_rate_micro: None,
+            fx_rate_source: None,
+            fx_rate_date: None,
             superseded_by: None,
         };
-        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+        if deps
+            .normalized_facts
+            .insert_primary_with_supersession(&nf)
+            .await
+            .is_ok()
+        {
             normalized_count += 1;
         }
     }
 
     // Persist instant rows. Try to attach to an existing period; create a
     // new annual stub if none.
-    for ((metric, derived_fy, fq), f) in best_instant {
+    for ((metric, _segment_id, derived_fy, fq), f) in best_instant {
+        let fiscal = calendar.period_for(f.period_end);
         let pid = match deps.periods.get_id(&cik, derived_fy, fq).await? {
             Some(id) => id,
             None => {
                 // Create a placeholder period anchored at the instant date.
                 let p = Period {
-                    id: 0, cik: cik.clone(),
-                    fiscal_year: derived_fy, fiscal_quarter: fq,
-                    fiscal_year_end: resolved_fye.clone(),
-                    start_date: f.period_end, end_date: f.period_end,
-                    kind: if fq == 0 { PeriodKind::Annual } else { PeriodKind::Quarterly },
+                    id: 0,
+                    cik: cik.clone(),
+                    fiscal_year: derived_fy,
+                    fiscal_quarter: fq,
+                    fiscal_year_end: fiscal.fiscal_year_end,
+                    start_date: f.period_end,
+                    end_date: f.period_end,
+                    kind: if fq == 0 {
+                        PeriodKind::Annual
+                    } else {
+                        PeriodKind::Quarterly
+                    },
                     is_53_week: false,
                 };
                 deps.periods.upsert_returning_id(&p).await?
@@ -303,15 +406,28 @@ pub async fn ingest_company(
         };
         let value = apply_sign(metric, f.value_numeric);
         let nf = NormalizedFact {
-            id: 0, cik: cik.clone(), metric, period_id: pid,
-            value, unit: f.unit.clone(),
-            source_fact_id: f.id, source_kind: f.source_kind,
+            id: 0,
+            cik: cik.clone(),
+            metric,
+            period_id: pid,
+            value,
+            unit: f.unit.clone(),
+            source_fact_id: f.id,
+            source_kind: f.source_kind,
             is_primary: true,
-            original_value: None, original_unit: None,
-            fx_rate_micro: None, fx_rate_source: None, fx_rate_date: None,
+            original_value: None,
+            original_unit: None,
+            fx_rate_micro: None,
+            fx_rate_source: None,
+            fx_rate_date: None,
             superseded_by: None,
         };
-        if deps.normalized_facts.insert_primary_with_supersession(&nf).await.is_ok() {
+        if deps
+            .normalized_facts
+            .insert_primary_with_supersession(&nf)
+            .await
+            .is_ok()
+        {
             normalized_count += 1;
         }
     }
@@ -371,7 +487,9 @@ pub async fn reresolve_custom_points(
     let unaligned = custom_metrics.points_unaligned(cik).await?;
     let mut realigned = 0usize;
     for point in unaligned {
-        let Some(token) = point.observed_date.as_deref() else { continue };
+        let Some(token) = point.observed_date.as_deref() else {
+            continue;
+        };
         let resolution = match resolve_period(token, PeriodKind::Annual, &periods) {
             Resolution::Unaligned => resolve_period(token, PeriodKind::Quarterly, &periods),
             other => other,
@@ -415,9 +533,19 @@ async fn fetch_prices(
     let daily = match deps.market_data.historical_prices(ticker, from, last).await {
         Ok(d) => d,
         Err(e) => {
-            record_event(deps, cik, None, "prices", Severity::Warn, true,
-                format!("Price history unavailable ({e}); market cap and FCF yield will be absent."),
-                events).await?;
+            record_event(
+                deps,
+                cik,
+                None,
+                "prices",
+                Severity::Warn,
+                true,
+                format!(
+                    "Price history unavailable ({e}); market cap and FCF yield will be absent."
+                ),
+                events,
+            )
+            .await?;
             return Ok(0);
         }
     };
@@ -430,7 +558,9 @@ async fn fetch_prices(
     for end in end_dates {
         // Nearest close on-or-before the period end (weekend/holiday-safe).
         if let Some((_, &close)) = by_date.range(..=end).next_back() {
-            deps.prices.upsert(cik, end, &ticker.0, close, "yahoo").await?;
+            deps.prices
+                .upsert(cik, end, &ticker.0, close, "yahoo")
+                .await?;
             written += 1;
         }
     }
@@ -457,9 +587,17 @@ async fn fetch_prices(
         }
     }
 
-    record_event(deps, cik, None, "prices", Severity::Info, false,
+    record_event(
+        deps,
+        cik,
+        None,
+        "prices",
+        Severity::Info,
+        false,
         format!("Fetched {written} end-of-day closes for market-cap derivation."),
-        events).await?;
+        events,
+    )
+    .await?;
     Ok(written)
 }
 
@@ -479,20 +617,20 @@ fn is_positive_only(metric: Metric) -> bool {
     matches!(
         metric,
         Metric::Revenue
-        | Metric::CostOfRevenue
-        | Metric::GrossProfit
-        | Metric::SharesOutstandingBasic
-        | Metric::SharesOutstandingDiluted
-        | Metric::CashAndEquivalents
-        | Metric::LongTermDebt
-        | Metric::CurrentDebt
-        | Metric::TotalDebt
-        | Metric::TotalAssets
-        | Metric::TotalLiabilities
-        | Metric::CapitalExpenditures
-        | Metric::DepreciationAmortization
-        | Metric::HistoricalMarketCap
-        | Metric::CurrentMarketCap
+            | Metric::CostOfRevenue
+            | Metric::GrossProfit
+            | Metric::SharesOutstandingBasic
+            | Metric::SharesOutstandingDiluted
+            | Metric::CashAndEquivalents
+            | Metric::LongTermDebt
+            | Metric::CurrentDebt
+            | Metric::TotalDebt
+            | Metric::TotalAssets
+            | Metric::TotalLiabilities
+            | Metric::CapitalExpenditures
+            | Metric::DepreciationAmortization
+            | Metric::HistoricalMarketCap
+            | Metric::CurrentMarketCap
     )
 }
 
@@ -525,10 +663,22 @@ async fn derive_bank_revenue(
             continue;
         }
         // Look up the bank inputs.
-        let nii = deps.normalized_facts.current_value(cik, Metric::NetInterestIncome, p.id).await?;
-        let noni = deps.normalized_facts.current_value(cik, Metric::NoninterestIncome, p.id).await?;
-        let iio = deps.normalized_facts.current_value(cik, Metric::InterestIncomeOperating, p.id).await?;
-        let ie = deps.normalized_facts.current_value(cik, Metric::InterestExpense, p.id).await?;
+        let nii = deps
+            .normalized_facts
+            .current_value(cik, Metric::NetInterestIncome, p.id)
+            .await?;
+        let noni = deps
+            .normalized_facts
+            .current_value(cik, Metric::NoninterestIncome, p.id)
+            .await?;
+        let iio = deps
+            .normalized_facts
+            .current_value(cik, Metric::InterestIncomeOperating, p.id)
+            .await?;
+        let ie = deps
+            .normalized_facts
+            .current_value(cik, Metric::InterestExpense, p.id)
+            .await?;
 
         let derived = match (nii.as_ref(), noni.as_ref(), iio.as_ref(), ie.as_ref()) {
             // Resolution order step 3: NetInterestIncome + NoninterestIncome
@@ -545,13 +695,19 @@ async fn derive_bank_revenue(
             // Sanity guard: bank revenue is always positive. Skip + log if not.
             if value <= 0 {
                 record_event(
-                    deps, cik, None, "normalize", Severity::Warn, false,
+                    deps,
+                    cik,
+                    None,
+                    "normalize",
+                    Severity::Warn,
+                    false,
                     format!(
                         "Skipped bank-revenue derivation for FY{} Q{} ({}): value {} ≤ 0",
                         p.fiscal_year, p.fiscal_quarter, step, value,
                     ),
                     events,
-                ).await?;
+                )
+                .await?;
                 continue;
             }
             let dm = DerivedMetric {
@@ -601,8 +757,14 @@ mod tests {
 
     #[test]
     fn capex_sign_is_normalized_positive() {
-        assert_eq!(apply_sign(Metric::CapitalExpenditures, -1_000_000), 1_000_000);
-        assert_eq!(apply_sign(Metric::CapitalExpenditures, 1_000_000), 1_000_000);
+        assert_eq!(
+            apply_sign(Metric::CapitalExpenditures, -1_000_000),
+            1_000_000
+        );
+        assert_eq!(
+            apply_sign(Metric::CapitalExpenditures, 1_000_000),
+            1_000_000
+        );
     }
 
     #[test]
@@ -658,12 +820,23 @@ mod tests {
 
         // Import a point dated in a not-yet-ingested period: unaligned.
         let pt = custom_metrics
-            .upsert_point(metric.id, None, Some("2024-06-01"), 1_000_000, Some("manual"))
+            .upsert_point(
+                metric.id,
+                None,
+                Some("2024-06-01"),
+                1_000_000,
+                Some("manual"),
+            )
             .await
             .unwrap();
-        assert_eq!(custom_metrics.points_unaligned(&cik).await.unwrap().len(), 1);
+        assert_eq!(
+            custom_metrics.points_unaligned(&cik).await.unwrap().len(),
+            1
+        );
 
-        let n = reresolve_custom_points(&periods, &custom_metrics, &cik).await.unwrap();
+        let n = reresolve_custom_points(&periods, &custom_metrics, &cik)
+            .await
+            .unwrap();
         assert_eq!(n, 0, "still unaligned — no matching period ingested yet");
 
         // Add the period (simulating a refresh that ingests FY2024) and rerun the hook.
@@ -682,11 +855,19 @@ mod tests {
             .await
             .unwrap();
 
-        let n = reresolve_custom_points(&periods, &custom_metrics, &cik).await.unwrap();
+        let n = reresolve_custom_points(&periods, &custom_metrics, &cik)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
-        assert_eq!(custom_metrics.points_unaligned(&cik).await.unwrap().len(), 0);
+        assert_eq!(
+            custom_metrics.points_unaligned(&cik).await.unwrap().len(),
+            0
+        );
 
-        let aligned = custom_metrics.points_aligned(metric.id, PeriodKind::Annual).await.unwrap();
+        let aligned = custom_metrics
+            .points_aligned(metric.id, PeriodKind::Annual)
+            .await
+            .unwrap();
         assert_eq!(aligned.len(), 1);
         assert_eq!(aligned[0].1.id, pt.id);
         assert_eq!(aligned[0].0.id, period_id);

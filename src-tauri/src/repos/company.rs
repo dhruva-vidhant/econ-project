@@ -22,7 +22,9 @@ pub struct SqliteCompanyRepo {
 }
 
 impl SqliteCompanyRepo {
-    pub fn new(pool: std::sync::Arc<Pool>) -> Self { Self { pool } }
+    pub fn new(pool: std::sync::Arc<Pool>) -> Self {
+        Self { pool }
+    }
 }
 
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Company> {
@@ -38,8 +40,7 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Company> {
     })
 }
 
-const COLS: &str =
-    "cik, ticker, name, exchange, sic, fiscal_year_end, added_at, last_refreshed";
+const COLS: &str = "cik, ticker, name, exchange, sic, fiscal_year_end, added_at, last_refreshed";
 
 #[async_trait]
 impl CompanyRepo for SqliteCompanyRepo {
@@ -99,7 +100,9 @@ impl CompanyRepo for SqliteCompanyRepo {
         let mut stmt = g.conn().prepare(&q)?;
         let rows = stmt.query_map([], map_row)?;
         let mut out = Vec::new();
-        for r in rows { out.push(r?); }
+        for r in rows {
+            out.push(r?);
+        }
         Ok(out)
     }
 
@@ -109,24 +112,38 @@ impl CompanyRepo for SqliteCompanyRepo {
             // Drop dependent rows in FK-safe order.
             let tx = g.conn().transaction()?;
             tx.execute("DELETE FROM ingestion_event WHERE cik = ?1", [&cik.0])?;
+            tx.execute(
+                "DELETE FROM custom_metric_point WHERE custom_metric_id IN
+                 (SELECT id FROM custom_metric WHERE cik = ?1)",
+                [&cik.0],
+            )?;
+            tx.execute("DELETE FROM custom_metric WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM derived_metric WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM normalized_fact WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM raw_fact WHERE cik = ?1", [&cik.0])?;
-            tx.execute("DELETE FROM amendment_coverage_gap WHERE cik = ?1", [&cik.0])?;
+            tx.execute(
+                "DELETE FROM amendment_coverage_gap WHERE cik = ?1",
+                [&cik.0],
+            )?;
             tx.execute(
                 "DELETE FROM restatement_resolved_by
                  WHERE restatement_announcement_id IN
                    (SELECT id FROM restatement_announcement WHERE cik = ?1)",
                 [&cik.0],
             )?;
-            tx.execute("DELETE FROM restatement_announcement WHERE cik = ?1", [&cik.0])?;
+            tx.execute(
+                "DELETE FROM restatement_announcement WHERE cik = ?1",
+                [&cik.0],
+            )?;
             tx.execute("DELETE FROM historical_price WHERE cik = ?1", [&cik.0])?;
+            tx.execute("DELETE FROM current_price WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM period WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM filing WHERE cik = ?1", [&cik.0])?;
             tx.execute("DELETE FROM company WHERE cik = ?1", [&cik.0])?;
             tx.commit()?;
         } else {
-            g.conn().execute("DELETE FROM company WHERE cik = ?1", [&cik.0])?;
+            g.conn()
+                .execute("DELETE FROM company WHERE cik = ?1", [&cik.0])?;
         }
         Ok(())
     }
