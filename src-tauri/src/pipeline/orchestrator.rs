@@ -104,11 +104,11 @@ pub async fn ingest_company(
     // ─── Download + Parse ───────────────────────────────────────────────
     let cf = companyfacts::fetch_companyfacts(&deps.sec, &cik).await?;
     let mut raw_facts = companyfacts::to_raw_facts(&cik, &cf);
-    let legacy_annuals =
-        legacy_annual::fetch_public_annual_history(&deps.sec, &cik, &subs.filings.files).await?;
-    if !legacy_annuals.is_empty() {
+    let legacy_filings =
+        legacy_annual::fetch_public_history(&deps.sec, &cik, &subs.filings.files).await?;
+    if !legacy_filings.is_empty() {
         let mut legacy_count = 0;
-        for (filing, legacy_facts) in legacy_annuals {
+        for (filing, legacy_facts) in legacy_filings {
             legacy_count += legacy_facts.len();
             raw_facts.extend(legacy_facts);
             deps.filings.upsert(&filing).await?;
@@ -122,9 +122,7 @@ pub async fn ingest_company(
             "download",
             Severity::Info,
             false,
-            format!(
-                "Retrieved {legacy_count} audited facts from BBW's pre-XBRL public annual reports."
-            ),
+            format!("Retrieved {legacy_count} audited facts from BBW's pre-XBRL public filings."),
             &mut events,
         )
         .await?;

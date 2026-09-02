@@ -1,4 +1,4 @@
-//! Dynamic retrieval of audited annual facts from pinned pre-XBRL SEC filings.
+//! Dynamic retrieval of BBW's audited pre-XBRL SEC filing history.
 
 use chrono::{Datelike, NaiveDate, Utc};
 use once_cell::sync::Lazy;
@@ -17,6 +17,17 @@ struct LegacyAnnual {
     accession: &'static str,
     start: (i32, u32, u32),
     end: (i32, u32, u32),
+}
+
+struct LegacyQuarter {
+    accession: &'static str,
+    fp: &'static str,
+    fiscal_start: (i32, u32, u32),
+    quarter_start: (i32, u32, u32),
+    end: (i32, u32, u32),
+    single_value_index: usize,
+    ytd_value_index: Option<usize>,
+    instant_value_index: usize,
 }
 
 const BBW_LEGACY_ANNUALS: &[LegacyAnnual] = &[
@@ -47,12 +58,175 @@ const BBW_LEGACY_ANNUALS: &[LegacyAnnual] = &[
     },
 ];
 
+const BBW_LEGACY_QUARTERS: &[LegacyQuarter] = &[
+    LegacyQuarter {
+        accession: "0000950137-04-010981",
+        fp: "Q3",
+        fiscal_start: (2004, 1, 4),
+        quarter_start: (2004, 7, 4),
+        end: (2004, 10, 2),
+        single_value_index: 1,
+        ytd_value_index: Some(3),
+        instant_value_index: 1,
+    },
+    LegacyQuarter {
+        accession: "0000950137-05-006068",
+        fp: "Q1",
+        fiscal_start: (2005, 1, 2),
+        quarter_start: (2005, 1, 2),
+        end: (2005, 4, 2),
+        single_value_index: 0,
+        ytd_value_index: None,
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-05-010328",
+        fp: "Q2",
+        fiscal_start: (2005, 1, 2),
+        quarter_start: (2005, 4, 3),
+        end: (2005, 7, 2),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-05-013841",
+        fp: "Q3",
+        fiscal_start: (2005, 1, 2),
+        quarter_start: (2005, 7, 3),
+        end: (2005, 10, 1),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-06-005729",
+        fp: "Q1",
+        fiscal_start: (2006, 1, 1),
+        quarter_start: (2006, 1, 1),
+        end: (2006, 4, 1),
+        single_value_index: 0,
+        ytd_value_index: None,
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-06-008978",
+        fp: "Q2",
+        fiscal_start: (2006, 1, 1),
+        quarter_start: (2006, 4, 2),
+        end: (2006, 7, 1),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-06-012176",
+        fp: "Q3",
+        fiscal_start: (2006, 1, 1),
+        quarter_start: (2006, 7, 2),
+        end: (2006, 9, 30),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0000950137-07-007249",
+        fp: "Q1",
+        fiscal_start: (2006, 12, 31),
+        quarter_start: (2006, 12, 31),
+        end: (2007, 3, 31),
+        single_value_index: 0,
+        ytd_value_index: None,
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-07-177576",
+        fp: "Q2",
+        fiscal_start: (2006, 12, 31),
+        quarter_start: (2007, 4, 1),
+        end: (2007, 6, 30),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-07-240474",
+        fp: "Q3",
+        fiscal_start: (2006, 12, 31),
+        quarter_start: (2007, 7, 1),
+        end: (2007, 9, 29),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-08-107855",
+        fp: "Q1",
+        fiscal_start: (2007, 12, 30),
+        quarter_start: (2007, 12, 30),
+        end: (2008, 3, 29),
+        single_value_index: 0,
+        ytd_value_index: None,
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-08-168236",
+        fp: "Q2",
+        fiscal_start: (2007, 12, 30),
+        quarter_start: (2008, 3, 30),
+        end: (2008, 6, 28),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-08-227842",
+        fp: "Q3",
+        fiscal_start: (2007, 12, 30),
+        quarter_start: (2008, 6, 29),
+        end: (2008, 9, 27),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-09-111477",
+        fp: "Q1",
+        fiscal_start: (2009, 1, 4),
+        quarter_start: (2009, 1, 4),
+        end: (2009, 4, 4),
+        single_value_index: 0,
+        ytd_value_index: None,
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-09-174221",
+        fp: "Q2",
+        fiscal_start: (2009, 1, 4),
+        quarter_start: (2009, 4, 5),
+        end: (2009, 7, 4),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+    LegacyQuarter {
+        accession: "0001193125-09-232255",
+        fp: "Q3",
+        fiscal_start: (2009, 1, 4),
+        quarter_start: (2009, 7, 5),
+        end: (2009, 10, 3),
+        single_value_index: 0,
+        ytd_value_index: Some(2),
+        instant_value_index: 0,
+    },
+];
+
 static AMOUNT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?:\(\s*)?-?(?:\d{1,3}(?:,\d{3})+|\d+\.\d+|\d+)(?:\s*\))?").unwrap());
 
 /// Fetch BBW's post-IPO, pre-XBRL annual reports through the SEC metadata
 /// advertised by its submissions response. Other issuers are unaffected.
-pub async fn fetch_public_annual_history(
+pub async fn fetch_public_history(
     client: &SecClient,
     cik: &Cik,
     files: &[HistoricalSubmissionsFile],
@@ -69,7 +243,7 @@ pub async fn fetch_public_annual_history(
             mismatch("historical submissions index no longer covers BBW's first 10-K")
         })?;
     let historical = submissions::fetch_historical(client, file).await?;
-    let mut out = Vec::with_capacity(BBW_LEGACY_ANNUALS.len());
+    let mut out = Vec::with_capacity(BBW_LEGACY_ANNUALS.len() + BBW_LEGACY_QUARTERS.len());
     for annual in BBW_LEGACY_ANNUALS {
         let index = historical
             .accession_number
@@ -90,6 +264,26 @@ pub async fn fetch_public_annual_history(
         let facts = parse_bbw_10k(cik, &filing, annual, &html, &url)?;
         out.push((filing, facts));
     }
+    for quarter in BBW_LEGACY_QUARTERS {
+        let index = historical
+            .accession_number
+            .iter()
+            .position(|accession| accession == quarter.accession)
+            .ok_or_else(|| {
+                mismatch("a required BBW legacy 10-Q is absent from historical submissions")
+            })?;
+        let filing = filing_at(cik, &historical, index)?;
+        let primary_document = historical
+            .primary_document
+            .get(index)
+            .filter(|document| !document.is_empty())
+            .ok_or_else(|| mismatch("a required BBW legacy 10-Q has no primary document"))?;
+        let url = primary_document_url(cik, &filing.accession_no, primary_document);
+        let bytes = client.get_bytes(&url).await?;
+        let html = String::from_utf8_lossy(&bytes);
+        let facts = parse_bbw_10q(cik, &filing, quarter, &html, &url)?;
+        out.push((filing, facts));
+    }
     Ok(out)
 }
 
@@ -101,15 +295,16 @@ fn filing_at(cik: &Cik, recent: &SubmissionsRecent, index: usize) -> Result<Fili
     let filed_at = parse_date(recent.filing_date.get(index), "filing date")?;
     let period_of_report = parse_date(recent.report_date.get(index), "report date")?;
     let form = recent.form.get(index).map(String::as_str).unwrap_or("");
-    if form != "10-K" {
+    let form_type = FormType::from_str(form);
+    if !matches!(form_type, FormType::TenK | FormType::TenQ) {
         return Err(mismatch(
-            "BBW's first annual filing is no longer classified as a 10-K",
+            "a required BBW legacy filing has an unexpected form",
         ));
     }
     Ok(Filing {
         accession_no: AccessionNo(accession.clone()),
         cik: cik.clone(),
-        form_type: FormType::TenK,
+        form_type,
         filed_at,
         period_of_report: Some(period_of_report),
         is_amendment: false,
@@ -204,6 +399,7 @@ fn parse_bbw_10k(
             scale.apply(value)?,
             Some(period_start),
             period_end,
+            "FY",
         ));
     }
 
@@ -232,6 +428,7 @@ fn parse_bbw_10k(
                 Scale::Thousands.apply(value)?,
                 Some(period_start),
                 period_end,
+                "FY",
             ));
         }
     }
@@ -253,9 +450,205 @@ fn parse_bbw_10k(
             Scale::Thousands.apply(value)?,
             None,
             period_end,
+            "FY",
         ));
     }
     Ok(facts)
+}
+
+fn parse_bbw_10q(
+    cik: &Cik,
+    filing: &Filing,
+    quarter: &LegacyQuarter,
+    html: &str,
+    url: &str,
+) -> Result<Vec<RawFact>, SourceError> {
+    let document = Html::parse_document(html);
+    let table_selector = Selector::parse("table").unwrap();
+    let operations = document
+        .select(&table_selector)
+        .find(|table| {
+            let text = normalized_text(*table);
+            text.contains("total revenues")
+                && (text.contains("net income") || text.contains("net loss"))
+        })
+        .ok_or_else(|| mismatch_url(url, "quarterly operations table not found"))?;
+    let cash_flows = document
+        .select(&table_selector)
+        .find(|table| {
+            let text = normalized_text(*table);
+            text.contains("depreciation and amortization") && text.contains("operating activities")
+        })
+        .ok_or_else(|| mismatch_url(url, "quarterly cash-flow table not found"))?;
+    let balance_sheet = document.select(&table_selector).find(|table| {
+        let text = normalized_text(*table);
+        text.contains("total assets") && text.contains("cash and cash equivalents")
+    });
+
+    let fiscal_start = tuple_date(quarter.fiscal_start);
+    let quarter_start = tuple_date(quarter.quarter_start);
+    let period_end = filing.period_of_report.unwrap();
+    if period_end != tuple_date(quarter.end) {
+        return Err(mismatch_url(url, "unexpected legacy quarterly period end"));
+    }
+
+    let mut facts = Vec::new();
+    for (labels, concept) in [
+        (&["total revenues"][..], "Revenues"),
+        (
+            &["net income", "net income (loss)", "net loss"][..],
+            "NetIncomeLoss",
+        ),
+        (
+            &["costs of merchandise sold", "cost of merchandise sold"][..],
+            "CostOfGoodsSold",
+        ),
+    ] {
+        let Some(values) = first_amounts_for_labels(&operations, labels) else {
+            if concept == "CostOfGoodsSold" {
+                continue;
+            }
+            return Err(mismatch_url(
+                url,
+                &format!("missing quarterly row for {concept}"),
+            ));
+        };
+        let single = values
+            .get(quarter.single_value_index)
+            .copied()
+            .ok_or_else(|| {
+                mismatch_url(url, &format!("missing current-quarter value for {concept}"))
+            })?;
+        facts.push(raw_fact(
+            cik,
+            filing,
+            concept,
+            "USD",
+            Scale::Thousands.apply(single)?,
+            Some(quarter_start),
+            period_end,
+            quarter.fp,
+        ));
+        if let Some(index) = quarter.ytd_value_index {
+            let ytd = values.get(index).copied().ok_or_else(|| {
+                mismatch_url(url, &format!("missing current-YTD value for {concept}"))
+            })?;
+            facts.push(raw_fact(
+                cik,
+                filing,
+                concept,
+                "USD",
+                Scale::Thousands.apply(ytd)?,
+                Some(fiscal_start),
+                period_end,
+                quarter.fp,
+            ));
+        }
+    }
+
+    for (labels, concept) in [
+        (
+            &[
+                "net cash provided by operating activities",
+                "net cash used in operating activities",
+                "net cash from operating activities",
+                "net cash provided by (used in) operating activities",
+            ][..],
+            "NetCashProvidedByUsedInOperatingActivities",
+        ),
+        (
+            &["depreciation and amortization"][..],
+            "DepreciationAndAmortization",
+        ),
+        (
+            &[
+                "purchases of property and equipment, net",
+                "purchases of property and equipment",
+            ][..],
+            "PaymentsToAcquirePropertyPlantAndEquipment",
+        ),
+    ] {
+        let Some(values) = first_amounts_for_labels(&cash_flows, labels) else {
+            continue;
+        };
+        let value = values
+            .get(quarter.instant_value_index)
+            .copied()
+            .ok_or_else(|| {
+                mismatch_url(
+                    url,
+                    &format!("missing current cash-flow value for {concept}"),
+                )
+            })?;
+        facts.push(raw_fact(
+            cik,
+            filing,
+            concept,
+            "USD",
+            Scale::Thousands.apply(value)?,
+            Some(fiscal_start),
+            period_end,
+            quarter.fp,
+        ));
+    }
+
+    if let Some(balance_sheet) = balance_sheet {
+        for (label, concept) in [
+            (
+                "cash and cash equivalents",
+                "CashAndCashEquivalentsAtCarryingValue",
+            ),
+            ("total assets", "Assets"),
+        ] {
+            if let Some(value) = amounts_after_label(&balance_sheet, label)
+                .and_then(|values| values.get(quarter.instant_value_index).copied())
+            {
+                facts.push(raw_fact(
+                    cik,
+                    filing,
+                    concept,
+                    "USD",
+                    Scale::Thousands.apply(value)?,
+                    None,
+                    period_end,
+                    quarter.fp,
+                ));
+            }
+        }
+    }
+    Ok(facts)
+}
+
+fn tuple_date(parts: (i32, u32, u32)) -> NaiveDate {
+    NaiveDate::from_ymd_opt(parts.0, parts.1, parts.2).unwrap()
+}
+
+fn first_amounts_for_labels(
+    table: &scraper::ElementRef<'_>,
+    labels: &[&str],
+) -> Option<Vec<ParsedAmount>> {
+    labels
+        .iter()
+        .find_map(|label| amounts_after_label(table, label))
+}
+
+fn amounts_after_label(table: &scraper::ElementRef<'_>, label: &str) -> Option<Vec<ParsedAmount>> {
+    let text = normalized_text(*table);
+    let start = text.find(label)? + label.len();
+    let after_label = &text[start..];
+    let requested_end = after_label
+        .find(" total revenues")
+        .or_else(|| after_label.find(" net retail sales"))
+        .unwrap_or(after_label.len().min(300));
+    let mut end = requested_end.min(300);
+    while !after_label.is_char_boundary(end) {
+        end -= 1;
+    }
+    let values = AMOUNT_RE
+        .find_iter(&after_label[..end])
+        .filter_map(|value| ParsedAmount::parse(value.as_str()))
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then_some(values)
 }
 
 fn find_table<'a>(
@@ -346,6 +739,7 @@ fn raw_fact(
     value_numeric: i64,
     period_start: Option<NaiveDate>,
     period_end: NaiveDate,
+    fp: &str,
 ) -> RawFact {
     RawFact {
         id: 0,
@@ -359,7 +753,7 @@ fn raw_fact(
         period_end,
         is_instant: period_start.is_none(),
         fy: Some(period_end.year()),
-        fp: Some("FY".into()),
+        fp: Some(fp.into()),
         filed: Some(filing.filed_at),
         source_kind: SourceKind::SecFilingHtml,
         ingested_at: Utc::now(),

@@ -84,6 +84,26 @@ async fn bbw_recovers_pre_2019_annuals_and_labels_quarters_by_historical_calenda
         .current_series(&company.cik, Metric::Revenue, PeriodKind::Quarterly)
         .await
         .unwrap();
+    let (_, fy2004_q3_revenue) = quarterly
+        .iter()
+        .find(|(period, _)| period.fiscal_year == 2004 && period.fiscal_quarter == 3)
+        .expect("BBW FY2004 Q3 revenue missing from its first public 10-Q");
+    assert_eq!(fy2004_q3_revenue.source_kind, SourceKind::SecFilingHtml);
+    for fiscal_year in 2005..=2009 {
+        for fiscal_quarter in 1..=4 {
+            assert!(
+                quarterly.iter().any(|(period, _)| {
+                    period.fiscal_year == fiscal_year && period.fiscal_quarter == fiscal_quarter
+                }),
+                "BBW quarterly revenue missing for FY{fiscal_year} Q{fiscal_quarter}"
+            );
+        }
+    }
+    let (_, fy2009_q2_revenue) = quarterly
+        .iter()
+        .find(|(period, _)| period.fiscal_year == 2009 && period.fiscal_quarter == 2)
+        .expect("BBW FY2009 Q2 revenue missing");
+    assert_eq!(fy2009_q2_revenue.value, 82_404_000_000_000);
     assert!(quarterly
         .iter()
         .filter(|(period, _)| period.fiscal_year == 2017)
