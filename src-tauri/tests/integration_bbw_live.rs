@@ -7,9 +7,11 @@ use std::sync::Arc;
 
 use econ_project_lib::db::Pool;
 use econ_project_lib::domain::{Metric, PeriodKind, SourceKind, Ticker};
+use econ_project_lib::import::bbw_metrics;
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::SqliteCompanyRepo;
 use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
+use econ_project_lib::repos::custom_metric::{CustomMetricRepo, SqliteCustomMetricRepo};
 use econ_project_lib::repos::derived_metric::SqliteDerivedMetricRepo;
 use econ_project_lib::repos::filing::SqliteFilingRepo;
 use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
@@ -42,6 +44,31 @@ async fn bbw_recovers_pre_2019_annuals_and_labels_quarters_by_historical_calenda
     };
 
     let (company, _) = ingest_company(&deps, &Ticker("BBW".into())).await.unwrap();
+    let custom_metrics = SqliteCustomMetricRepo::new(pool.clone());
+    let sync = bbw_metrics::sync(&company.cik, deps.periods.as_ref(), &custom_metrics)
+        .await
+        .unwrap();
+    assert_eq!(sync.metrics_created, 7);
+    let margin = custom_metrics
+        .get_by_key(&company.cik, "bbw_retail_gross_margin")
+        .await
+        .unwrap()
+        .expect("managed BBW retail gross margin metric missing");
+    let margin_points = custom_metrics
+        .points_aligned(margin.id, PeriodKind::Annual)
+        .await
+        .unwrap();
+    assert_eq!(margin_points.len(), 22);
+    assert_eq!(margin_points.first().unwrap().0.fiscal_year, 2004);
+    assert_eq!(
+        margin_points.first().unwrap().1.value_micro,
+        149_566_000_000_000
+    );
+    assert_eq!(margin_points.last().unwrap().0.fiscal_year, 2026);
+    assert_eq!(
+        margin_points.last().unwrap().1.value_micro,
+        272_727_000_000_000
+    );
     let annual = deps
         .normalized_facts
         .current_series(&company.cik, Metric::Revenue, PeriodKind::Annual)

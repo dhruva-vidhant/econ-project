@@ -6,6 +6,7 @@ use tauri::State;
 use crate::derived::series::{self, CurrentValuation, MetricSeriesPoint};
 use crate::domain::{Cik, Company, IngestionEvent, Metric, NormalizedFact, PeriodKind, Ticker};
 use crate::errors::AppError;
+use crate::import::bbw_metrics;
 use crate::pipeline::{ingest_company, reresolve_custom_points, IngestionSummary};
 use crate::repos::company::CompanyRepo;
 use crate::repos::current_price::CurrentPriceRepo;
@@ -39,7 +40,18 @@ pub async fn add_company(
     }
     let deps = state.pipeline_deps();
     let (company, summary) = ingest_company(&deps, &t).await?;
-    reresolve_custom_points(state.periods.as_ref(), state.custom_metrics.as_ref(), &company.cik).await?;
+    bbw_metrics::sync(
+        &company.cik,
+        state.periods.as_ref(),
+        state.custom_metrics.as_ref(),
+    )
+    .await?;
+    reresolve_custom_points(
+        state.periods.as_ref(),
+        state.custom_metrics.as_ref(),
+        &company.cik,
+    )
+    .await?;
     Ok(AddCompanyResponse { company, summary })
 }
 
@@ -50,7 +62,11 @@ pub async fn remove_company(
     drop_cache: bool,
 ) -> Result<(), AppError> {
     let cik = Cik::from_any(&cik).map_err(AppError::invalid)?;
-    state.companies.remove(&cik, drop_cache).await.map_err(Into::into)
+    state
+        .companies
+        .remove(&cik, drop_cache)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -107,9 +123,10 @@ pub async fn get_dashboard(
         Metric::TotalAssets,
         Metric::TotalLiabilities,
     ] {
-        let points =
-            series::revenue_aware_series(&ctx, &cik, *metric, PeriodKind::Annual).await?;
-        if points.is_empty() { continue; }
+        let points = series::revenue_aware_series(&ctx, &cik, *metric, PeriodKind::Annual).await?;
+        if points.is_empty() {
+            continue;
+        }
         let history: Vec<(String, i64)> = points
             .iter()
             .map(|p| (format!("FY{}", p.period.fiscal_year), p.value))
@@ -136,7 +153,11 @@ pub async fn get_ingestion_events(
         _ => None,
     };
     let lim = limit.unwrap_or(200);
-    state.events.recent(cik_opt.as_ref(), lim).await.map_err(Into::into)
+    state
+        .events
+        .recent(cik_opt.as_ref(), lim)
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -164,8 +185,22 @@ pub async fn refresh_company(
         .ok_or_else(|| AppError::not_found(format!("company {cik} not found")))?;
     let deps = state.pipeline_deps();
     let (company2, summary) = ingest_company(&deps, &company.ticker).await?;
-    reresolve_custom_points(state.periods.as_ref(), state.custom_metrics.as_ref(), &company2.cik).await?;
-    Ok(AddCompanyResponse { company: company2, summary })
+    bbw_metrics::sync(
+        &company2.cik,
+        state.periods.as_ref(),
+        state.custom_metrics.as_ref(),
+    )
+    .await?;
+    reresolve_custom_points(
+        state.periods.as_ref(),
+        state.custom_metrics.as_ref(),
+        &company2.cik,
+    )
+    .await?;
+    Ok(AddCompanyResponse {
+        company: company2,
+        summary,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,7 +218,8 @@ pub async fn get_lineage(
 ) -> Result<LineagePayload, AppError> {
     // Fetch the normalized_fact directly via a small inline query.
     let g = state.pool.read().map_err(|e| AppError::Storage {
-        code: "storage", message: e.to_string(),
+        code: "storage",
+        message: e.to_string(),
     })?;
     let nf: NormalizedFact = g.conn().query_row(
         "SELECT id, cik, metric, period_id, value, unit, source_fact_id, source_kind, is_primary,
@@ -214,12 +250,23 @@ pub async fn get_lineage(
         other => AppError::Storage { code: "storage", message: other.to_string() },
     })?;
     drop(g);
-    let raw = state.raw_facts.get(nf.source_fact_id).await?
+    let raw = state
+        .raw_facts
+        .get(nf.source_fact_id)
+        .await?
         .ok_or_else(|| AppError::not_found("source raw_fact missing"))?;
-    let filing = state.filings.get(&raw.accession_no).await?
+    let filing = state
+        .filings
+        .get(&raw.accession_no)
+        .await?
         .ok_or_else(|| AppError::not_found("source filing missing"))?;
     let chain = state.normalized_facts.supersession_chain(nf.id).await?;
-    Ok(LineagePayload { primary: nf, raw_fact: raw, filing, supersession_chain: chain })
+    Ok(LineagePayload {
+        primary: nf,
+        raw_fact: raw,
+        filing,
+        supersession_chain: chain,
+    })
 }
 
 #[tauri::command]
@@ -246,7 +293,13 @@ pub async fn refresh_price(
     let price_micro = state.market_data.current_price(&company.ticker).await?;
     state
         .current_prices
-        .upsert(&cik, &company.ticker.0, price_micro, chrono::Utc::now(), "yahoo")
+        .upsert(
+            &cik,
+            &company.ticker.0,
+            price_micro,
+            chrono::Utc::now(),
+            "yahoo",
+        )
         .await?;
     let ctx = state.read_ctx();
     series::current_valuation(&ctx, &cik).await

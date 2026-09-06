@@ -24,8 +24,8 @@ const BUILTIN_COMPARE_OPTIONS = ["revenue", "net_income"] as const;
 
 /**
  * Custom-metrics management panel (§9.2, FR-CM-009). Carries a persistent
- * "user data" badge and never wires the lineage drawer — custom metrics
- * have no source-fact chain to show.
+ * source badge and never wires the lineage drawer — custom metrics have no
+ * normalized-fact chain to show.
  */
 export default function CustomMetricsPanel({ cik, ticker }: Props) {
   const metrics = useCustomMetrics(cik);
@@ -50,9 +50,9 @@ export default function CustomMetricsPanel({ cik, ticker }: Props) {
         <h2 className="text-sm font-semibold">Custom metrics</h2>
         <span
           className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-accent"
-          title="User-supplied data — not part of the SEC-sourced fact chain"
+          title="Includes user-supplied and reviewed company operating data outside the normalized fact chain"
         >
-          user data
+          supplemental data
         </span>
         <div className="ml-auto inline-flex rounded border border-border/60 text-xs">
           {(["annual", "quarterly"] as const).map((k) => (
@@ -189,12 +189,18 @@ function PanelBody({
             <span className="text-muted">{m.label}</span>
             <span className="text-[10px] uppercase text-muted">{m.unit_kind}</span>
             <div className="ml-auto flex gap-2">
-              <button className="text-muted hover:text-text" onClick={() => onEdit(m)}>
-                edit
-              </button>
-              <button className="text-bad hover:text-bad" onClick={() => onDelete(m.id, m.label)}>
-                delete
-              </button>
+              {m.key.startsWith("bbw_") ? (
+                <span className="text-[10px] uppercase text-accent">SEC reviewed</span>
+              ) : (
+                <>
+                  <button className="text-muted hover:text-text" onClick={() => onEdit(m)}>
+                    edit
+                  </button>
+                  <button className="text-bad hover:text-bad" onClick={() => onDelete(m.id, m.label)}>
+                    delete
+                  </button>
+                </>
+              )}
             </div>
           </li>
         ))}

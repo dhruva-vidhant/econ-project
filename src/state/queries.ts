@@ -85,6 +85,7 @@ export function useRefreshCompany() {
       qc.invalidateQueries({ queryKey: QK.events(data.company.cik) });
       qc.invalidateQueries({ queryKey: ["metricHistory", data.company.cik] });
       qc.invalidateQueries({ queryKey: QK.currentValuation(data.company.cik) });
+      qc.invalidateQueries({ queryKey: QK.customMetrics(data.company.cik) });
       // Re-resolution (D2) may realign previously-unaligned custom points.
       qc.invalidateQueries({ queryKey: ["custom-series", data.company.cik] });
     },
