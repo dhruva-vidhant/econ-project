@@ -25,7 +25,7 @@ use crate::repos::period::PeriodRepo;
 use crate::repos::raw_fact::RawFactRepo;
 use crate::sources::market_data::MarketDataAdapter;
 use crate::sources::{
-    companyfacts, legacy_annual, sec_client::SecClient, submissions, tickers::TickerMap,
+    companyfacts, legacy_html, sec_client::SecClient, submissions, tickers::TickerMap,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -105,7 +105,7 @@ pub async fn ingest_company(
     let cf = companyfacts::fetch_companyfacts(&deps.sec, &cik).await?;
     let mut raw_facts = companyfacts::to_raw_facts(&cik, &cf);
     let legacy_filings =
-        legacy_annual::fetch_public_history(&deps.sec, &cik, &subs.filings.files).await?;
+        legacy_html::fetch_configured_history(&deps.sec, &cik, &subs.filings.files).await?;
     if !legacy_filings.is_empty() {
         let mut legacy_count = 0;
         for (filing, legacy_facts) in legacy_filings {
@@ -122,7 +122,7 @@ pub async fn ingest_company(
             "download",
             Severity::Info,
             false,
-            format!("Retrieved {legacy_count} audited facts from BBW's pre-XBRL public filings."),
+            format!("Retrieved {legacy_count} facts from configured pre-XBRL public filings."),
             &mut events,
         )
         .await?;

@@ -1,17 +1,18 @@
-//! Dynamic retrieval of BBW's audited pre-XBRL SEC filing history.
+//! BBW-specific pre-XBRL filing configuration and HTML parsers.
 
-use chrono::{Datelike, NaiveDate, Utc};
-use once_cell::sync::Lazy;
-use regex::Regex;
+use chrono::NaiveDate;
 use scraper::{Html, Selector};
 
-use crate::domain::{AccessionNo, Cik, Filing, FormType, RawFact, SourceKind, MICRO};
+use crate::domain::{Cik, Filing, FormType, RawFact};
 use crate::errors::SourceError;
 
-use super::sec_client::SecClient;
-use super::submissions::{self, HistoricalSubmissionsFile, SubmissionsRecent};
+use super::{
+    amounts_after_label, find_table, first_amounts_for_labels, first_value, mismatch_url,
+    normalized_text, raw_fact, tuple_date, FilingConfig, IssuerConfig, Scale,
+};
 
 const BBW_CIK: &str = "0001113809";
+const ROW_BOUNDARY_LABELS: &[&str] = &[" total revenues", " net retail sales"];
 
 struct LegacyAnnual {
     accession: &'static str,
@@ -29,6 +30,37 @@ struct LegacyQuarter {
     ytd_value_index: Option<usize>,
     instant_value_index: usize,
 }
+
+pub(super) static CONFIG: IssuerConfig = IssuerConfig {
+    cik: BBW_CIK,
+    historical_anchor: "2005-03-29",
+    filings: BBW_FILINGS,
+    parse: parse_filing,
+};
+
+const BBW_FILINGS: &[FilingConfig] = &[
+    FilingConfig::new("0000950137-05-003677", FormType::TenK),
+    FilingConfig::new("0000950137-06-003138", FormType::TenK),
+    FilingConfig::new("0000950137-07-003883", FormType::TenK),
+    FilingConfig::new("0001193125-08-055664", FormType::TenK),
+    FilingConfig::new("0001193125-09-058733", FormType::TenK),
+    FilingConfig::new("0000950137-04-010981", FormType::TenQ),
+    FilingConfig::new("0000950137-05-006068", FormType::TenQ),
+    FilingConfig::new("0000950137-05-010328", FormType::TenQ),
+    FilingConfig::new("0000950137-05-013841", FormType::TenQ),
+    FilingConfig::new("0000950137-06-005729", FormType::TenQ),
+    FilingConfig::new("0000950137-06-008978", FormType::TenQ),
+    FilingConfig::new("0000950137-06-012176", FormType::TenQ),
+    FilingConfig::new("0000950137-07-007249", FormType::TenQ),
+    FilingConfig::new("0001193125-07-177576", FormType::TenQ),
+    FilingConfig::new("0001193125-07-240474", FormType::TenQ),
+    FilingConfig::new("0001193125-08-107855", FormType::TenQ),
+    FilingConfig::new("0001193125-08-168236", FormType::TenQ),
+    FilingConfig::new("0001193125-08-227842", FormType::TenQ),
+    FilingConfig::new("0001193125-09-111477", FormType::TenQ),
+    FilingConfig::new("0001193125-09-174221", FormType::TenQ),
+    FilingConfig::new("0001193125-09-232255", FormType::TenQ),
+];
 
 const BBW_LEGACY_ANNUALS: &[LegacyAnnual] = &[
     LegacyAnnual {
@@ -221,112 +253,23 @@ const BBW_LEGACY_QUARTERS: &[LegacyQuarter] = &[
     },
 ];
 
-static AMOUNT_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:\(\s*)?-?(?:\d{1,3}(?:,\d{3})+|\d+\.\d+|\d+)(?:\s*\))?").unwrap());
-
-/// Fetch BBW's post-IPO, pre-XBRL annual reports through the SEC metadata
-/// advertised by its submissions response. Other issuers are unaffected.
-pub async fn fetch_public_history(
-    client: &SecClient,
+fn parse_filing(
     cik: &Cik,
-    files: &[HistoricalSubmissionsFile],
-) -> Result<Vec<(Filing, Vec<RawFact>)>, SourceError> {
-    if cik.0 != BBW_CIK {
-        return Ok(Vec::new());
-    }
-    let file = files
+    filing: &Filing,
+    html: &str,
+    url: &str,
+) -> Result<Vec<RawFact>, SourceError> {
+    if let Some(annual) = BBW_LEGACY_ANNUALS
         .iter()
-        .find(|file| {
-            file.filing_from.as_str() <= "2005-03-29" && file.filing_to.as_str() >= "2005-03-29"
-        })
-        .ok_or_else(|| {
-            mismatch("historical submissions index no longer covers BBW's first 10-K")
-        })?;
-    let historical = submissions::fetch_historical(client, file).await?;
-    let mut out = Vec::with_capacity(BBW_LEGACY_ANNUALS.len() + BBW_LEGACY_QUARTERS.len());
-    for annual in BBW_LEGACY_ANNUALS {
-        let index = historical
-            .accession_number
-            .iter()
-            .position(|accession| accession == annual.accession)
-            .ok_or_else(|| {
-                mismatch("a required BBW legacy 10-K is absent from historical submissions")
-            })?;
-        let filing = filing_at(cik, &historical, index)?;
-        let primary_document = historical
-            .primary_document
-            .get(index)
-            .filter(|document| !document.is_empty())
-            .ok_or_else(|| mismatch("a required BBW legacy 10-K has no primary document"))?;
-        let url = primary_document_url(cik, &filing.accession_no, primary_document);
-        let bytes = client.get_bytes(&url).await?;
-        let html = String::from_utf8_lossy(&bytes);
-        let facts = parse_bbw_10k(cik, &filing, annual, &html, &url)?;
-        out.push((filing, facts));
+        .find(|annual| annual.accession == filing.accession_no.0)
+    {
+        return parse_bbw_10k(cik, filing, annual, html, url);
     }
-    for quarter in BBW_LEGACY_QUARTERS {
-        let index = historical
-            .accession_number
-            .iter()
-            .position(|accession| accession == quarter.accession)
-            .ok_or_else(|| {
-                mismatch("a required BBW legacy 10-Q is absent from historical submissions")
-            })?;
-        let filing = filing_at(cik, &historical, index)?;
-        let primary_document = historical
-            .primary_document
-            .get(index)
-            .filter(|document| !document.is_empty())
-            .ok_or_else(|| mismatch("a required BBW legacy 10-Q has no primary document"))?;
-        let url = primary_document_url(cik, &filing.accession_no, primary_document);
-        let bytes = client.get_bytes(&url).await?;
-        let html = String::from_utf8_lossy(&bytes);
-        let facts = parse_bbw_10q(cik, &filing, quarter, &html, &url)?;
-        out.push((filing, facts));
-    }
-    Ok(out)
-}
-
-fn filing_at(cik: &Cik, recent: &SubmissionsRecent, index: usize) -> Result<Filing, SourceError> {
-    let accession = recent
-        .accession_number
-        .get(index)
-        .ok_or_else(|| mismatch("historical filing has no accession number"))?;
-    let filed_at = parse_date(recent.filing_date.get(index), "filing date")?;
-    let period_of_report = parse_date(recent.report_date.get(index), "report date")?;
-    let form = recent.form.get(index).map(String::as_str).unwrap_or("");
-    let form_type = FormType::from_str(form);
-    if !matches!(form_type, FormType::TenK | FormType::TenQ) {
-        return Err(mismatch(
-            "a required BBW legacy filing has an unexpected form",
-        ));
-    }
-    Ok(Filing {
-        accession_no: AccessionNo(accession.clone()),
-        cik: cik.clone(),
-        form_type,
-        filed_at,
-        period_of_report: Some(period_of_report),
-        is_amendment: false,
-        amends: None,
-        item_4_02_8k: false,
-    })
-}
-
-fn parse_date(value: Option<&String>, field: &str) -> Result<NaiveDate, SourceError> {
-    value
-        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-        .ok_or_else(|| mismatch(&format!("BBW's first 10-K has an invalid {field}")))
-}
-
-fn primary_document_url(cik: &Cik, accession: &AccessionNo, document: &str) -> String {
-    let cik_number = cik.0.parse::<u64>().unwrap_or(0);
-    format!(
-        "https://www.sec.gov/Archives/edgar/data/{}/{}/{}",
-        cik_number,
-        accession.0.replace('-', ""),
-        document
-    )
+    let quarter = BBW_LEGACY_QUARTERS
+        .iter()
+        .find(|quarter| quarter.accession == filing.accession_no.0)
+        .ok_or_else(|| mismatch_url(url, "unconfigured BBW legacy filing"))?;
+    parse_bbw_10q(cik, filing, quarter, html, url)
 }
 
 fn parse_bbw_10k(
@@ -504,7 +447,8 @@ fn parse_bbw_10q(
             "CostOfGoodsSold",
         ),
     ] {
-        let Some(values) = first_amounts_for_labels(&operations, labels) else {
+        let Some(values) = first_amounts_for_labels(&operations, labels, ROW_BOUNDARY_LABELS)
+        else {
             if concept == "CostOfGoodsSold" {
                 continue;
             }
@@ -568,7 +512,8 @@ fn parse_bbw_10q(
             "PaymentsToAcquirePropertyPlantAndEquipment",
         ),
     ] {
-        let Some(values) = first_amounts_for_labels(&cash_flows, labels) else {
+        let Some(values) = first_amounts_for_labels(&cash_flows, labels, ROW_BOUNDARY_LABELS)
+        else {
             continue;
         };
         let value = values
@@ -600,7 +545,7 @@ fn parse_bbw_10q(
             ),
             ("total assets", "Assets"),
         ] {
-            if let Some(value) = amounts_after_label(&balance_sheet, label)
+            if let Some(value) = amounts_after_label(&balance_sheet, label, ROW_BOUNDARY_LABELS)
                 .and_then(|values| values.get(quarter.instant_value_index).copied())
             {
                 facts.push(raw_fact(
@@ -617,179 +562,4 @@ fn parse_bbw_10q(
         }
     }
     Ok(facts)
-}
-
-fn tuple_date(parts: (i32, u32, u32)) -> NaiveDate {
-    NaiveDate::from_ymd_opt(parts.0, parts.1, parts.2).unwrap()
-}
-
-fn first_amounts_for_labels(
-    table: &scraper::ElementRef<'_>,
-    labels: &[&str],
-) -> Option<Vec<ParsedAmount>> {
-    labels
-        .iter()
-        .find_map(|label| amounts_after_label(table, label))
-}
-
-fn amounts_after_label(table: &scraper::ElementRef<'_>, label: &str) -> Option<Vec<ParsedAmount>> {
-    let text = normalized_text(*table);
-    let start = text.find(label)? + label.len();
-    let after_label = &text[start..];
-    let requested_end = after_label
-        .find(" total revenues")
-        .or_else(|| after_label.find(" net retail sales"))
-        .unwrap_or(after_label.len().min(300));
-    let mut end = requested_end.min(300);
-    while !after_label.is_char_boundary(end) {
-        end -= 1;
-    }
-    let values = AMOUNT_RE
-        .find_iter(&after_label[..end])
-        .filter_map(|value| ParsedAmount::parse(value.as_str()))
-        .collect::<Vec<_>>();
-    (!values.is_empty()).then_some(values)
-}
-
-fn find_table<'a>(
-    document: &'a Html,
-    selector: &Selector,
-    first: &str,
-    second: &str,
-) -> Option<scraper::ElementRef<'a>> {
-    document.select(selector).find(|table| {
-        let text = normalized_text(*table);
-        text.contains(first) && text.contains(second)
-    })
-}
-
-fn first_value(
-    table: &scraper::ElementRef<'_>,
-    label: &str,
-    occurrence: usize,
-) -> Option<ParsedAmount> {
-    let text = normalized_text(*table);
-    text.match_indices(label)
-        .filter_map(|(start, _)| {
-            let after_label = &text[start + label.len()..];
-            AMOUNT_RE
-                .find(after_label.get(..after_label.len().min(160))?)
-                .and_then(|value| ParsedAmount::parse(value.as_str()))
-        })
-        .nth(occurrence)
-}
-
-fn normalized_text(element: scraper::ElementRef<'_>) -> String {
-    element
-        .text()
-        .flat_map(str::split_whitespace)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-#[derive(Clone, Copy)]
-struct ParsedAmount {
-    negative: bool,
-    value: f64,
-}
-
-impl ParsedAmount {
-    fn parse(input: &str) -> Option<Self> {
-        let negative = input.trim_start().starts_with('(') || input.trim_start().starts_with('-');
-        let value = input
-            .replace(['(', ')', '-', ' '], "")
-            .replace(',', "")
-            .parse()
-            .ok()?;
-        Some(Self { negative, value })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Scale {
-    Thousands,
-}
-
-impl Scale {
-    fn apply(self, amount: ParsedAmount) -> Result<i64, SourceError> {
-        let multiplier = match self {
-            Scale::Thousands => 1_000_f64 * MICRO as f64,
-        };
-        let signed = if amount.negative {
-            -amount.value
-        } else {
-            amount.value
-        };
-        let scaled = signed * multiplier;
-        if !scaled.is_finite() || scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
-            return Err(mismatch(
-                "legacy annual value overflowed micro-unit storage",
-            ));
-        }
-        Ok(scaled.round() as i64)
-    }
-}
-
-fn raw_fact(
-    cik: &Cik,
-    filing: &Filing,
-    concept: &str,
-    unit: &str,
-    value_numeric: i64,
-    period_start: Option<NaiveDate>,
-    period_end: NaiveDate,
-    fp: &str,
-) -> RawFact {
-    RawFact {
-        id: 0,
-        cik: cik.clone(),
-        accession_no: filing.accession_no.clone(),
-        taxonomy: "us-gaap".into(),
-        concept: concept.into(),
-        unit: unit.into(),
-        value_numeric,
-        period_start,
-        period_end,
-        is_instant: period_start.is_none(),
-        fy: Some(period_end.year()),
-        fp: Some(fp.into()),
-        filed: Some(filing.filed_at),
-        source_kind: SourceKind::SecFilingHtml,
-        ingested_at: Utc::now(),
-    }
-}
-
-fn mismatch(detail: &str) -> SourceError {
-    mismatch_url("BBW historical SEC submissions", detail)
-}
-
-fn mismatch_url(url: &str, detail: &str) -> SourceError {
-    SourceError::SchemaMismatch {
-        url: url.into(),
-        detail: detail.into(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn archive_url_uses_unpadded_cik_and_stripped_accession() {
-        assert_eq!(
-            primary_document_url(
-                &Cik(BBW_CIK.into()),
-                &AccessionNo(BBW_LEGACY_ANNUALS[0].accession.into()),
-                "c93387e10vk.htm"
-            ),
-            "https://www.sec.gov/Archives/edgar/data/1113809/000095013705003677/c93387e10vk.htm"
-        );
-    }
-
-    #[test]
-    fn parses_split_parentheses_and_scales_values() {
-        let amount = ParsedAmount::parse("(16,494)").unwrap();
-        assert_eq!(Scale::Thousands.apply(amount).unwrap(), -16_494_000_000_000);
-    }
 }
