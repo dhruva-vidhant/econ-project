@@ -24,13 +24,13 @@ use econ_project_lib::db::Pool;
 use econ_project_lib::domain::{Metric, PeriodKind, Ticker};
 use econ_project_lib::pipeline::{ingest_company, IngestionDeps};
 use econ_project_lib::repos::company::SqliteCompanyRepo;
+use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::repos::filing::SqliteFilingRepo;
+use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
 use econ_project_lib::repos::ingestion_event::SqliteIngestionEventRepo;
 use econ_project_lib::repos::normalized_fact::SqliteNormalizedFactRepo;
 use econ_project_lib::repos::period::SqlitePeriodRepo;
 use econ_project_lib::repos::raw_fact::SqliteRawFactRepo;
-use econ_project_lib::repos::historical_price::SqliteHistoricalPriceRepo;
-use econ_project_lib::repos::current_price::SqliteCurrentPriceRepo;
 use econ_project_lib::sources::market_data::YahooMarketData;
 use econ_project_lib::sources::sec_client::SecClient;
 
@@ -82,9 +82,13 @@ async fn lulu_annual_series_has_no_gaps_and_quarters_are_ordered() {
     println!("\n  annual net-income fiscal years: {years:?}");
 
     assert!(
-        years.len() >= 12,
-        "expected a deep annual history (>=12 years), got {} — drift-FYE years are being dropped",
+        years.len() >= 22,
+        "expected annual history through FY2003 (>=22 years), got {} - legacy or drift-FYE years are being dropped",
         years.len()
+    );
+    assert_eq!(
+        annual.first().unwrap().0.end_date,
+        chrono::NaiveDate::from_ymd_opt(2004, 1, 31).unwrap()
     );
 
     // No interior gaps: consecutive fiscal years must differ by exactly 1.
@@ -120,7 +124,39 @@ async fn lulu_annual_series_has_no_gaps_and_quarters_are_ordered() {
     let q_ends: Vec<_> = quarterly.iter().map(|(p, _)| p.end_date).collect();
     let mut q_ends_sorted = q_ends.clone();
     q_ends_sorted.sort_unstable();
-    assert_eq!(q_ends, q_ends_sorted, "quarterly series not ordered by end_date");
+    assert_eq!(
+        q_ends, q_ends_sorted,
+        "quarterly series not ordered by end_date"
+    );
+    assert_eq!(
+        quarterly.first().unwrap().0.end_date,
+        chrono::NaiveDate::from_ymd_opt(2006, 4, 30).unwrap()
+    );
+    for expected_end in [
+        (2006, 4, 30),
+        (2006, 7, 31),
+        (2006, 10, 31),
+        (2007, 1, 31),
+        (2007, 4, 30),
+        (2007, 7, 31),
+        (2007, 10, 31),
+        (2008, 2, 3),
+        (2008, 5, 4),
+        (2008, 8, 3),
+        (2008, 11, 2),
+        (2009, 2, 1),
+        (2009, 5, 3),
+        (2009, 8, 2),
+        (2009, 11, 1),
+        (2010, 1, 31),
+    ] {
+        let end = chrono::NaiveDate::from_ymd_opt(expected_end.0, expected_end.1, expected_end.2)
+            .unwrap();
+        assert!(
+            quarterly.iter().any(|(period, _)| period.end_date == end),
+            "missing configured legacy quarter ending {end}"
+        );
+    }
 
     // Spot-check FY2023 (the screenshotted year): quarters 1..4 present and
     // ordered by end_date.

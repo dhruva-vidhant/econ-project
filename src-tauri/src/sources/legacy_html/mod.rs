@@ -12,6 +12,7 @@ use super::sec_client::SecClient;
 use super::submissions::{self, HistoricalSubmissionsFile, SubmissionsRecent};
 
 mod bbw;
+mod lulu;
 
 type ParseFn = fn(&Cik, &Filing, &str, &str) -> Result<Vec<RawFact>, SourceError>;
 
@@ -36,7 +37,7 @@ impl FilingConfig {
     }
 }
 
-static REGISTRY: &[&IssuerConfig] = &[&bbw::CONFIG];
+static REGISTRY: &[&IssuerConfig] = &[&bbw::CONFIG, &lulu::CONFIG];
 
 static AMOUNT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?:\(\s*)?-?(?:\d{1,3}(?:,\d{3})+|\d+\.\d+|\d+)(?:\s*\))?").unwrap());
@@ -295,6 +296,7 @@ mod tests {
     #[test]
     fn registry_matches_only_configured_cik() {
         assert!(configured_issuer(&Cik("0001113809".into())).is_some());
+        assert!(configured_issuer(&Cik("0001397187".into())).is_some());
         assert!(configured_issuer(&Cik("0000000000".into())).is_none());
     }
 
