@@ -66,4 +66,22 @@ describe("CustomMetricsPanel", () => {
     expect(screen.queryByText("edit")).toBeNull();
     expect(screen.queryByText("delete")).toBeNull();
   });
+
+  it("marks managed PSX metrics as SEC reviewed and hides mutation controls", async () => {
+    vi.mocked(api.listCustomMetrics).mockResolvedValue([
+      {
+        ...FIXTURE_METRIC,
+        key: "psx_realized_refining_margin_per_barrel",
+        label: "Realized Refining Margin per Barrel",
+        unit_kind: "number",
+        currency: null,
+      },
+    ]);
+
+    renderWithClient(<CustomMetricsPanel cik="0001534701" ticker="PSX" />);
+
+    expect(await screen.findByText("SEC reviewed")).toBeInTheDocument();
+    expect(screen.queryByText("edit")).toBeNull();
+    expect(screen.queryByText("delete")).toBeNull();
+  });
 });

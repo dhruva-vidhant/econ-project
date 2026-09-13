@@ -21,6 +21,7 @@ interface Props {
 }
 
 const BUILTIN_COMPARE_OPTIONS = ["revenue", "net_income"] as const;
+const REVIEWED_PREFIXES = ["bbw_", "psx_"];
 
 /**
  * Custom-metrics management panel (§9.2, FR-CM-009). Carries a persistent
@@ -189,7 +190,7 @@ function PanelBody({
             <span className="text-muted">{m.label}</span>
             <span className="text-[10px] uppercase text-muted">{m.unit_kind}</span>
             <div className="ml-auto flex gap-2">
-              {m.key.startsWith("bbw_") ? (
+              {REVIEWED_PREFIXES.some((prefix) => m.key.startsWith(prefix)) ? (
                 <span className="text-[10px] uppercase text-accent">SEC reviewed</span>
               ) : (
                 <>
