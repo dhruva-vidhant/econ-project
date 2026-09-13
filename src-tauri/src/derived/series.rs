@@ -205,18 +205,15 @@ async fn capital_expenditures_series(
         .collect();
     let direct_periods: HashSet<i64> = out.iter().map(|p| p.period.id).collect();
 
-    // PP&E net is an instant; gather across both kinds keyed by end_date so any
-    // period can find its closing and most-recent-prior balance.
-    let ppne_a = ctx
+    // Match the balance cadence to the requested series. Annual additions use
+    // consecutive year-end balances; using Q3 as the opening balance would mix
+    // a full year of depreciation with one quarter of PP&E movement.
+    let ppne = ctx
         .normalized_facts
-        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Annual)
-        .await?;
-    let ppne_q = ctx
-        .normalized_facts
-        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, PeriodKind::Quarterly)
+        .current_series(cik, Metric::PropertyPlantAndEquipmentNet, kind.clone())
         .await?;
     let mut ppne_by_end: BTreeMap<chrono::NaiveDate, i64> = BTreeMap::new();
-    for (p, n) in ppne_a.iter().chain(ppne_q.iter()) {
+    for (p, n) in &ppne {
         ppne_by_end.insert(p.end_date, n.value);
     }
 

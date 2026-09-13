@@ -62,6 +62,7 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::LongTermDebt => &[
             ("us-gaap", "LongTermDebt"),
             ("us-gaap", "LongTermDebtNoncurrent"),
+            ("us-gaap", "LongTermDebtAndCapitalLeaseObligations"),
         ],
         Metric::CurrentDebt => &[
             ("us-gaap", "DebtCurrent"),
@@ -108,6 +109,7 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         // when a filer doesn't report PaymentsToAcquirePropertyPlantAndEquipment.
         Metric::PropertyPlantAndEquipmentNet => &[
             ("us-gaap", "PropertyPlantAndEquipmentNet"),
+            ("us-gaap", "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization"),
         ],
         // Bank-revenue inputs. Used by the `bank_revenue_v1` derivation
         // (see pipeline::orchestrator) when canonical Revenue is missing.
@@ -169,6 +171,21 @@ mod tests {
     #[test]
     fn total_debt_has_no_direct_candidates_it_is_derived() {
         assert!(concepts_for(Metric::TotalDebt).is_empty());
+    }
+
+    #[test]
+    fn lease_inclusive_successor_concepts_resolve() {
+        assert_eq!(
+            metric_for("us-gaap", "LongTermDebtAndCapitalLeaseObligations"),
+            Some(Metric::LongTermDebt)
+        );
+        assert_eq!(
+            metric_for(
+                "us-gaap",
+                "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization"
+            ),
+            Some(Metric::PropertyPlantAndEquipmentNet)
+        );
     }
 
     #[test]
