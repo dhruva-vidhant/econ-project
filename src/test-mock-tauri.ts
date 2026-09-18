@@ -442,7 +442,7 @@ mockIPC(async (cmd, args) => {
   const a = (args as Record<string, unknown>) ?? {};
   switch (cmd) {
     case "ping":
-      return { message: "pong", version: "1.6.5" };
+      return { message: "pong", version: "1.7.0" };
     case "plugin:dialog|save":
       return state.savedDialogPath;
     case "list_companies":
