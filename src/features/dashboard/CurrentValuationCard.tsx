@@ -22,6 +22,9 @@ export default function CurrentValuationCard({ cik }: Props) {
   };
 
   const v = query.data;
+  const error = refreshPrice.error ?? query.error;
+  const errorMessage = (error as { detail?: { message?: string } } | null)?.detail
+    ?.message;
 
   if (query.isLoading) {
     return (
@@ -61,7 +64,8 @@ export default function CurrentValuationCard({ cik }: Props) {
           </div>
         </div>
         <div className="mt-3 text-sm text-muted">
-          No live quote yet — click Refresh price to fetch the current quote.
+          Current yield unavailable. Refresh the price, or refresh company data if
+          the financial inputs are missing.
         </div>
         <button
           className="mt-4 w-full rounded border border-accent/60 bg-accent/10 px-3 py-1 text-xs hover:bg-accent/20 disabled:opacity-50 md:w-auto"
@@ -70,6 +74,11 @@ export default function CurrentValuationCard({ cik }: Props) {
         >
           {refreshPrice.isPending ? "Refreshing…" : "↻ Refresh price"}
         </button>
+        {(refreshPrice.isError || query.isError) && (
+          <div className="mt-3 text-xs text-bad">
+            {errorMessage ?? "Could not load the current valuation."}
+          </div>
+        )}
       </section>
     );
   }
@@ -157,8 +166,7 @@ export default function CurrentValuationCard({ cik }: Props) {
       </div>
       {refreshPrice.isError && (
         <div className="mt-3 text-xs text-bad">
-          {(refreshPrice.error as { detail?: { message?: string } })?.detail?.message ??
-            "Could not fetch the current price."}
+          {errorMessage ?? "Could not fetch the current price."}
         </div>
       )}
     </section>

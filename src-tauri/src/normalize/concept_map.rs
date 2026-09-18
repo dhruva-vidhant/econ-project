@@ -98,6 +98,7 @@ pub fn concepts_for(metric: Metric) -> &'static [(&'static str, &'static str)] {
         Metric::DepreciationAmortization => &[
             ("us-gaap", "DepreciationAndAmortization"),
             ("us-gaap", "DepreciationDepletionAndAmortization"),
+            ("us-gaap", "Depreciation"),
             // Bank fallback: WFC and other large banks file
             // DepreciationAmortizationAndAccretionNet quarterly (and
             // FY), while the canonical DepreciationAndAmortization is
@@ -185,6 +186,14 @@ mod tests {
                 "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization"
             ),
             Some(Metric::PropertyPlantAndEquipmentNet)
+        );
+    }
+
+    #[test]
+    fn standalone_depreciation_resolves_for_fcf_inputs() {
+        assert_eq!(
+            metric_for("us-gaap", "Depreciation"),
+            Some(Metric::DepreciationAmortization)
         );
     }
 
