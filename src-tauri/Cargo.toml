@@ -62,3 +62,7 @@ e2e-webdriver = ["dep:tauri-plugin-wdio-webdriver"]
 [[bin]]
 name = "import_transaction_margin"
 path = "src/bin/import_transaction_margin.rs"
+
+[[bin]]
+name = "refresh_companies"
+path = "src/bin/refresh_companies.rs"
