@@ -219,6 +219,27 @@ impl CustomMetricRepo for SqliteCustomMetricRepo {
             let conn = g.conn();
             match period_id {
                 Some(pid) => {
+                    // Aligned points keep a fiscal label in `observed_date` so a
+                    // period rebuild (which nulls `period_id`) can re-resolve them.
+                    let label: Option<String> = match observed_date {
+                        Some(d) => Some(d.to_string()),
+                        None => conn
+                            .query_row(
+                                "SELECT CASE WHEN fiscal_quarter = 0 THEN 'FY' || fiscal_year
+                                        ELSE 'FY' || fiscal_year || ' Q' || fiscal_quarter END
+                                 FROM period WHERE id = ?1",
+                                [pid],
+                                |r| r.get(0),
+                            )
+                            .ok(),
+                    };
+                    let observed_date = label.as_deref();
+                    // A detached point carrying the same label is superseded.
+                    conn.execute(
+                        "DELETE FROM custom_metric_point
+                         WHERE custom_metric_id = ?1 AND period_id IS NULL AND observed_date = ?2",
+                        rusqlite::params![metric_id, observed_date],
+                    )?;
                     conn.execute(
                         "INSERT INTO custom_metric_point (custom_metric_id, period_id, observed_date, value_micro, source_note, imported_at)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)

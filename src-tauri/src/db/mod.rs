@@ -16,6 +16,7 @@ use crate::errors::RepoError;
 
 const INITIAL_SCHEMA: &str = include_str!("./migrations/V1__initial.sql");
 const V2_CUSTOM_METRICS_SCHEMA: &str = include_str!("./migrations/V2__custom_metrics.sql");
+const V3_CUSTOM_POINT_LABELS: &str = include_str!("./migrations/V3__custom_point_labels.sql");
 
 /// Connection pool: one writer (mutex-protected) + a read pool.
 pub struct Pool {
@@ -54,6 +55,10 @@ impl Pool {
         // V2: custom metrics + CSV export. Additive; no changes to V1 tables.
         writer
             .execute_batch(V2_CUSTOM_METRICS_SCHEMA)
+            .map_err(|e| RepoError::Migration(e.to_string()))?;
+        // V3: backfill fiscal labels on aligned custom-metric points. Idempotent.
+        writer
+            .execute_batch(V3_CUSTOM_POINT_LABELS)
             .map_err(|e| RepoError::Migration(e.to_string()))?;
 
         // Reader pool

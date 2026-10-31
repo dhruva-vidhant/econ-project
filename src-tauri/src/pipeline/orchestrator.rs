@@ -897,4 +897,79 @@ mod tests {
         assert_eq!(aligned[0].1.id, pt.id);
         assert_eq!(aligned[0].0.id, period_id);
     }
+
+    #[tokio::test]
+    async fn aligned_points_survive_period_rebuild() {
+        use crate::db::Pool;
+        use crate::domain::{Company, NewCustomMetric, Ticker, UnitKind};
+        use crate::repos::company::{CompanyRepo, SqliteCompanyRepo};
+        use crate::repos::custom_metric::SqliteCustomMetricRepo;
+        use crate::repos::period::SqlitePeriodRepo;
+        use chrono::{NaiveDate, TimeZone, Utc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = std::sync::Arc::new(Pool::open(&dir.path().join("test.sqlite")).unwrap());
+        let cik = Cik("0000000002".into());
+        SqliteCompanyRepo::new(pool.clone())
+            .upsert(&Company {
+                cik: cik.clone(),
+                ticker: Ticker("TEST".into()),
+                name: "Test Co".into(),
+                exchange: None,
+                sic: None,
+                fiscal_year_end: Some("1231".into()),
+                added_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                last_refreshed: None,
+            })
+            .await
+            .unwrap();
+        let periods = SqlitePeriodRepo::new(pool.clone());
+        let custom_metrics = SqliteCustomMetricRepo::new(pool.clone());
+        let metric = custom_metrics
+            .create(
+                &cik,
+                &NewCustomMetric {
+                    key: "margin".into(),
+                    label: "Margin".into(),
+                    unit_kind: UnitKind::Ratio,
+                    currency: None,
+                    decimals: Some(2),
+                    description: None,
+                },
+            )
+            .await
+            .unwrap();
+        let q3 = Period {
+            id: 0,
+            cik: cik.clone(),
+            fiscal_year: 2026,
+            fiscal_quarter: 3,
+            fiscal_year_end: "1231".into(),
+            start_date: NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 9, 30).unwrap(),
+            kind: PeriodKind::Quarterly,
+            is_53_week: false,
+        };
+        let pid = periods.upsert_returning_id(&q3).await.unwrap();
+        // Aligned point imported without an explicit date.
+        let pt = custom_metrics
+            .upsert_point(metric.id, Some(pid), None, 460_000, Some("csv import"))
+            .await
+            .unwrap();
+        assert_eq!(pt.observed_date.as_deref(), Some("FY2026 Q3"));
+
+        use crate::repos::period::PeriodRepo;
+        periods.reset_normalized_for_reclassification(&cik).await.unwrap();
+        assert_eq!(custom_metrics.points_unaligned(&cik).await.unwrap().len(), 1);
+
+        let new_pid = periods.upsert_returning_id(&q3).await.unwrap();
+        let n = reresolve_custom_points(&periods, &custom_metrics, &cik).await.unwrap();
+        assert_eq!(n, 1, "label lets the point re-attach after a rebuild");
+        let aligned = custom_metrics
+            .points_aligned(metric.id, PeriodKind::Quarterly)
+            .await
+            .unwrap();
+        assert_eq!(aligned.len(), 1);
+        assert_eq!(aligned[0].0.id, new_pid);
+    }
 }

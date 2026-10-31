@@ -38,6 +38,10 @@ pub async fn add_company(
     if t.0.is_empty() {
         return Err(AppError::invalid("ticker cannot be empty"));
     }
+    // A saved ticker is a refresh, not a fresh add.
+    if let Some(existing) = state.companies.get_by_ticker(&t).await? {
+        return refresh_company(state, existing.cik.0).await;
+    }
     let deps = state.pipeline_deps();
     let (company, summary) = ingest_company(&deps, &t).await?;
     reviewed_metrics::sync(
