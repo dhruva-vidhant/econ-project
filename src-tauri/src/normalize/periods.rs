@@ -95,22 +95,37 @@ fn concept_key(taxonomy: &str, concept: &str) -> String {
 }
 
 /// Classify a duration fact into one of the canonical slots based on
-/// its `fp` tag (which gives the position in the year) and the
-/// duration of its period (which distinguishes single-quarter from
-/// YTD for the same fp). Returns `None` for facts that aren't usable
-/// (missing period_start, missing fp, weirdly-sized spans).
-fn classify_slot(f: &RawFact) -> Option<Slot> {
+/// the fiscal quarter its `period_end` falls in and the duration of
+/// its period (which distinguishes single-quarter from YTD). The SEC
+/// `fp` tag is only a fallback: it names the *filing's* period, so a
+/// Q3 10-Q also tags its prior-quarter and prior-year comparatives
+/// `Q3`, and trusting it collapses them all into one slot. Returns
+/// `None` for facts that aren't usable (missing period_start, unknown
+/// quarter, weirdly-sized spans).
+fn classify_slot(f: &RawFact, end_quarter: Option<u8>) -> Option<Slot> {
     let start = f.period_start?;
     let days = (f.period_end - start).num_days();
-    let fp = f.fp.as_deref()?;
-    Some(match (fp, days) {
-        ("Q1", d) if d <= 110 => Slot::SingleQ1,
-        ("Q2", d) if d <= 110 => Slot::SingleQ2,
-        ("Q2", d) if (150..=210).contains(&d) => Slot::YtdH1,
-        ("Q3", d) if d <= 110 => Slot::SingleQ3,
-        ("Q3", d) if (240..=290).contains(&d) => Slot::Ytd9M,
-        ("Q4", d) if d <= 110 => Slot::SingleQ4,
-        ("FY", d) if d >= 340 => Slot::Fy,
+    let quarter = match end_quarter {
+        // `compute_fiscal_quarter` reports the year-end close as 0.
+        Some(0) => 4,
+        Some(q) => q,
+        None => match f.fp.as_deref()? {
+            "Q1" => 1,
+            "Q2" => 2,
+            "Q3" => 3,
+            "Q4" => 4,
+            "FY" => 4,
+            _ => return None,
+        },
+    };
+    Some(match (quarter, days) {
+        (1, d) if d <= 110 => Slot::SingleQ1,
+        (2, d) if d <= 110 => Slot::SingleQ2,
+        (2, d) if (150..=210).contains(&d) => Slot::YtdH1,
+        (3, d) if d <= 110 => Slot::SingleQ3,
+        (3, d) if (240..=290).contains(&d) => Slot::Ytd9M,
+        (4, d) if d <= 110 => Slot::SingleQ4,
+        (4, d) if d >= 340 => Slot::Fy,
         _ => return None,
     })
 }
@@ -141,11 +156,11 @@ pub fn reconcile_quarters(
             // Instants don't go through quarterly derivation; caller handles.
             continue;
         }
-        let slot = match classify_slot(f) {
+        let fiscal = calendar.period_for(f.period_end);
+        let slot = match classify_slot(f, fiscal.fiscal_quarter) {
             Some(s) => s,
             None => continue,
         };
-        let fiscal = calendar.period_for(f.period_end);
         let ck = concept_key(&f.taxonomy, &f.concept);
         let key = (metric, ck, fiscal.segment_id, fiscal.fiscal_year, slot);
         let take = match by_key.get(&key) {
@@ -734,6 +749,23 @@ mod tests {
         let q2 = q.iter().find(|x| x.fq == 2).unwrap();
         assert_eq!(q2.value, 175);
         assert!(!q2.derived, "single-quarter should win over derived");
+    }
+
+    #[test]
+    fn ignores_filing_fp_tag_for_prior_period_comparatives() {
+        // A Q3 10-Q tags its Q1/Q2 comparatives `Q3` too. Each must land
+        // in the slot its period_end implies, not collapse into SingleQ3.
+        let raw = vec![
+            rf_dates(("us-gaap", "NetIncomeLoss"), "Q3", d(2026, 1, 1), d(2026, 3, 31), 1113),
+            rf_dates(("us-gaap", "NetIncomeLoss"), "Q3", d(2026, 4, 1), d(2026, 6, 30), 1104),
+            rf_dates(("us-gaap", "NetIncomeLoss"), "Q3", d(2026, 7, 1), d(2026, 9, 30), 1073),
+            rf_dates(("us-gaap", "NetIncomeLoss"), "Q3", d(2026, 1, 1), d(2026, 9, 30), 3290),
+        ];
+        let (q, _) = reconcile_quarters(&raw, &calendar());
+        let val = |fq: u8| q.iter().find(|x| x.fq == fq).unwrap().value;
+        assert_eq!(val(1), 1113);
+        assert_eq!(val(2), 1104);
+        assert_eq!(val(3), 1073);
     }
 
     #[test]
