@@ -17,11 +17,15 @@ use super::resolve::{resolve_period, Resolution};
 pub struct ImportOptions {
     pub granularity: PeriodKind,
     pub default_unit: UnitKind,
+    /// Leave points that already exist for a (metric, period) untouched
+    /// instead of overwriting them. Used by the one-shot loader binaries.
+    #[serde(default)]
+    pub skip_existing: bool,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
-        Self { granularity: PeriodKind::Annual, default_unit: UnitKind::Number }
+        Self { granularity: PeriodKind::Annual, default_unit: UnitKind::Number, skip_existing: false }
     }
 }
 
@@ -37,6 +41,7 @@ pub struct ImportReport {
     pub metrics_created: Vec<String>,
     pub imported: u32,
     pub updated: u32,
+    pub skipped: u32,
     pub unaligned: u32,
     pub rejected: Vec<ImportRowResultDetail>,
 }
@@ -229,6 +234,10 @@ pub async fn import_csv(
 
         match resolve_period(&period_str, options.granularity.clone(), periods) {
             Resolution::Matched(period_id) => {
+                if options.skip_existing && existing_points.contains(&(metric_id, period_id)) {
+                    report.skipped += 1;
+                    continue;
+                }
                 repo.upsert_point(metric_id, Some(period_id), None, value_micro, Some("csv import"))
                     .await?;
                 if existing_points.insert((metric_id, period_id)) {
@@ -464,5 +473,24 @@ mod tests {
                 (2024, 1_682_015_000_000_000_000),
             ],
         );
+    }
+
+    #[tokio::test]
+    async fn skip_existing_leaves_points_untouched() {
+        let pool = setup().await;
+        let cik = seed_company(&pool).await;
+        let periods = seed_annual_periods(&pool, &cik, &[2023, 2024]).await;
+        let repo = SqliteCustomMetricRepo::new(pool);
+        let first = "metric,period,value,unit\ntpv,FY2023,100,count\n";
+        import_csv(&cik, first, &ImportOptions::default(), &repo, &periods).await.unwrap();
+        let opts = ImportOptions { skip_existing: true, ..ImportOptions::default() };
+        let second = "metric,period,value,unit\ntpv,FY2023,999,count\ntpv,FY2024,200,count\n";
+        let report = import_csv(&cik, second, &opts, &repo, &periods).await.unwrap();
+        assert_eq!((report.imported, report.skipped, report.updated), (1, 1, 0));
+        let m = repo.get_by_key(&cik, "tpv").await.unwrap().unwrap();
+        let pts = repo.points_aligned(m.id, PeriodKind::Annual).await.unwrap();
+        let v = |fy| pts.iter().find(|(p, _)| p.fiscal_year == fy).unwrap().1.value_micro;
+        assert_eq!(v(2023), 100_000_000, "existing value preserved");
+        assert_eq!(v(2024), 200_000_000);
     }
 }

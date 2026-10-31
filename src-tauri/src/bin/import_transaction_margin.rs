@@ -11,7 +11,8 @@
 //! Run with:
 //!   cargo run --bin import_transaction_margin
 //!
-//! Idempotent — safe to re-run after CSV updates. Points are upserted.
+//! Idempotent — safe to re-run after CSV updates. Points that already exist are
+//! left untouched; only new periods are added.
 //!
 //! To create a new custom-metric loader for a different CSV:
 //!   1. Copy this file to src/bin/import_<metric_name>.rs
@@ -94,6 +95,7 @@ async fn main() {
     let options = ImportOptions {
         granularity: PeriodKind::Quarterly,
         default_unit: UnitKind::Ratio,
+        skip_existing: true,
     };
 
     let report = import_csv(&cik, &transformed, &options, &custom_repo, &periods)
@@ -104,6 +106,7 @@ async fn main() {
     println!("Metrics created: {:?}", report.metrics_created);
     println!("Imported: {}", report.imported);
     println!("Updated: {}", report.updated);
+    println!("Skipped (already present): {}", report.skipped);
     println!("Unaligned: {}", report.unaligned);
     if !report.rejected.is_empty() {
         println!("Rejected:");
