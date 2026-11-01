@@ -74,3 +74,7 @@ path = "src/bin/import_tpv.rs"
 [[bin]]
 name = "import_active_accounts"
 path = "src/bin/import_active_accounts.rs"
+
+[[bin]]
+name = "import_transaction_margin_dollars"
+path = "src/bin/import_transaction_margin_dollars.rs"
